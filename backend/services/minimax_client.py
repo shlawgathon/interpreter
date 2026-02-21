@@ -5,6 +5,7 @@ Translation: Chat completions API with streaming
 TTS: T2A v2 API with streaming
 """
 
+import base64
 import logging
 from typing import Optional
 
@@ -58,10 +59,13 @@ VOICE_MAP = {
 
 
 def get_language_name(code: str) -> str:
+    """Get the full language name for a language code."""
     return LANGUAGE_NAMES.get(code, code)
 
 
 class MinimaxClient:
+    """Async client for MiniMax translation (M2.5) and TTS (Speech 2.6 Turbo)."""
+
     def __init__(self, api_key: str, group_id: str):
         self.api_key = api_key
         self.group_id = group_id
@@ -88,7 +92,8 @@ class MinimaxClient:
             return None
 
         system_prompt = (
-            f"You are a real-time interpreter translating from {source_language} to {target_language}. "
+            f"You are a real-time interpreter translating "
+            f"from {source_language} to {target_language}. "
             f"Translate the following spoken text naturally and accurately. "
             f"Preserve the speaker's tone, intent, and emotional nuance. "
             f"Output ONLY the translation, nothing else. No explanations, no quotes."
@@ -121,14 +126,17 @@ class MinimaxClient:
                 translated = message.get("content", "").strip()
                 return translated
 
-            logger.warning(f"No choices in MiniMax response: {data}")
+            logger.warning("No choices in MiniMax response: %s", data)
             return None
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"MiniMax translation HTTP error: {e.response.status_code} - {e.response.text}")
+            logger.error(
+                "MiniMax translation HTTP error: %s - %s",
+                e.response.status_code, e.response.text,
+            )
             raise
-        except Exception as e:
-            logger.error(f"MiniMax translation error: {e}")
+        except (ConnectionError, ValueError) as e:
+            logger.error("MiniMax translation error: %s", e)
             raise
 
     async def text_to_speech(
@@ -181,23 +189,28 @@ class MinimaxClient:
             # Check for base64 audio
             audio_b64 = data.get("data", {}).get("audio_base64", "")
             if audio_b64:
-                import base64
                 return base64.b64decode(audio_b64)
 
             # Check if audio is directly in extra_info or different format
             extra = data.get("extra_info", {})
             if extra:
-                logger.info(f"MiniMax TTS extra info: {extra}")
+                logger.info("MiniMax TTS extra info: %s", extra)
 
-            logger.warning(f"No audio in MiniMax TTS response: {list(data.keys())}")
+            logger.warning(
+                "No audio in MiniMax TTS response: %s", list(data.keys()),
+            )
             return None
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"MiniMax TTS HTTP error: {e.response.status_code} - {e.response.text}")
+            logger.error(
+                "MiniMax TTS HTTP error: %s - %s",
+                e.response.status_code, e.response.text,
+            )
             raise
-        except Exception as e:
-            logger.error(f"MiniMax TTS error: {e}")
+        except (ConnectionError, ValueError) as e:
+            logger.error("MiniMax TTS error: %s", e)
             raise
 
     async def close(self):
+        """Close the HTTP client."""
         await self.client.aclose()

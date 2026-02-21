@@ -9,12 +9,13 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.speechmatics_client import SpeechmaticsClient
-from services.minimax_client import MinimaxClient
+from services.minimax_client import MinimaxClient, get_language_name
 
 load_dotenv()
 
@@ -23,8 +24,9 @@ logger = logging.getLogger("interpreter")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("🌐 Interpreter backend starting...")
+async def lifespan(_app: FastAPI):
+    """Application lifespan context manager."""
+    logger.info("Interpreter backend starting...")
     yield
     logger.info("Interpreter backend shutting down.")
 
@@ -42,6 +44,7 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
+    """Health check endpoint."""
     return {"status": "ok", "service": "interpreter-backend"}
 
 
@@ -97,15 +100,14 @@ async def websocket_translate(ws: WebSocket):
                 ):
                     await translate_and_speak(transcript_buffer.strip())
                     transcript_buffer = ""
-        except Exception as e:
-            logger.error(f"Error in on_transcript: {e}")
+        except (ConnectionError, RuntimeError) as e:
+            logger.error("Error in on_transcript: %s", e)
 
     async def translate_and_speak(text: str):
         """Translate text and send back TTS audio."""
         async with translation_lock:
             try:
                 # Step 1: Translate via MiniMax LLM
-                from services.minimax_client import get_language_name
                 src_name = get_language_name(source_lang)
                 tgt_name = get_language_name(target_lang)
 
@@ -124,7 +126,7 @@ async def websocket_translate(ws: WebSocket):
                     "text": translated,
                 })
 
-                logger.info(f"[Translate] {text} → {translated}")
+                logger.info("[Translate] %s → %s", text, translated)
 
                 # Step 2: TTS via MiniMax Speech
                 audio_data = await minimax.text_to_speech(
@@ -135,10 +137,10 @@ async def websocket_translate(ws: WebSocket):
                 if audio_data:
                     # Send binary audio back
                     await ws.send_bytes(audio_data)
-                    logger.info(f"[TTS] Sent {len(audio_data)} bytes of audio")
+                    logger.info("[TTS] Sent %d bytes of audio", len(audio_data))
 
-            except Exception as e:
-                logger.error(f"Translation/TTS error: {e}")
+            except (httpx.HTTPStatusError, ConnectionError, ValueError) as e:
+                logger.error("Translation/TTS error: %s", e)
                 await ws.send_json({
                     "type": "error",
                     "message": str(e),
@@ -155,7 +157,7 @@ async def websocket_translate(ws: WebSocket):
                 if msg.get("type") == "config":
                     source_lang = msg.get("source_lang", "en")
                     target_lang = msg.get("target_lang", "es")
-                    logger.info(f"Config: {source_lang} → {target_lang}")
+                    logger.info("Config: %s → %s", source_lang, target_lang)
 
                     # Initialize Speechmatics with the source language
                     if speechmatics:
@@ -176,8 +178,8 @@ async def websocket_translate(ws: WebSocket):
 
     except WebSocketDisconnect:
         logger.info("Client disconnected")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+    except RuntimeError as e:
+        logger.error("WebSocket error: %s", e)
     finally:
         # Flush remaining transcript buffer
         if transcript_buffer.strip():
