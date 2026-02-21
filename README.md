@@ -1,6 +1,6 @@
-# 🌐 Interpreter — Live Speaker Translation
+# Interpreter — Live Speaker Translation
 
-A Chrome extension + FastAPI backend that translates live audio from any web chat app (Google Meet, Zoom, Discord, etc.) in real time. Hear everything in your native tongue — or route the translated audio into the call so others hear it too.
+A Chrome extension + FastAPI backend that translates live audio from web chat apps (Google Meet, Zoom, Discord, etc.) in real time. Hear everything in your native language, or route translated audio into the call.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ A Chrome extension + FastAPI backend that translates live audio from any web cha
 │                                                       │            │
 │                                              MiniMax Translation    │
 │                                                       │            │
-│                                              MiniMax TTS (2.6)     │
+│                                              MiniMax TTS (2.8)     │
 │                                                       │            │
 │  Offscreen Doc ◀── Service Worker ◀── Translated Audio ◀──────┘   │
 │   (playback via selected output device)                            │
@@ -70,6 +70,10 @@ Then load in Chrome:
 5. Hit **Start Translation**
 6. Hear translated audio live 🎧
 
+Notes:
+- Original tab audio passthrough is disabled in offscreen capture, so you should not hear untranslated + translated from the extension at the same time.
+- If output is set to BlackHole 2ch, local speakers are silent by design unless you monitor with a Multi-Output device.
+
 ## BlackHole Setup (Route Audio into Calls)
 
 To let other meeting participants hear the translated audio:
@@ -98,10 +102,32 @@ Now when you start translation, the translated audio plays into BlackHole, which
 | **Speechmatics** | $200 (code: `VOICEAGENT200`) | [portal.speechmatics.com](https://portal.speechmatics.com) |
 | **MiniMax**      | $20                          | [minimax.io](https://www.minimax.io)                       |
 
+## Latency Tuning
+
+You can tune backend chunking and partial update behavior in `backend/.env`:
+
+```bash
+# Translation chunking
+TRANSLATION_TRIGGER_CHAR_THRESHOLD=24
+
+# Partial translated-text UI throttling
+TRANSLATION_PARTIAL_MIN_DELTA_CHARS=12
+TRANSLATION_PARTIAL_MIN_INTERVAL_MS=300
+
+# Speechmatics finalization speed
+SPEECHMATICS_MAX_DELAY=1.0
+```
+
+Guidance:
+- Lower `TRANSLATION_TRIGGER_CHAR_THRESHOLD` for faster response.
+- Higher `TRANSLATION_TRIGGER_CHAR_THRESHOLD` for fewer, larger chunks.
+- Lower `SPEECHMATICS_MAX_DELAY` for faster final transcripts.
+- Raise partial throttles if live text appears to constantly rewrite.
+
 ## Tech Stack
 
 - **Extension**: React, TypeScript, Vite, CRXJS, Chrome MV3
 - **Backend**: Python, FastAPI, WebSocket, uv
 - **STT**: Speechmatics Real-time API
-- **Translation + TTS**: MiniMax M2.5 + Speech 2.6 Turbo
+- **Translation + TTS**: MiniMax M2 + Speech 2.8 Turbo
 - **Audio Routing**: BlackHole (macOS virtual audio loopback)

@@ -8,6 +8,7 @@ Docs: https://docs.speechmatics.com/rt-api-ref
 import asyncio
 import json
 import logging
+import os
 from typing import Callable, Awaitable
 
 import websockets
@@ -19,6 +20,7 @@ logger = logging.getLogger("interpreter.speechmatics")
 SM_RT_URL = "wss://eu2.rt.speechmatics.com/v2"
 SM_PING_INTERVAL = 20
 SM_PING_TIMEOUT = 30
+SM_MAX_DELAY = float(os.getenv("SPEECHMATICS_MAX_DELAY", "1.0"))
 
 # Language code mapping
 SM_LANGUAGE_MAP = {
@@ -76,7 +78,7 @@ class SpeechmaticsClient:
                     "language": self.language,
                     "operating_point": "enhanced",
                     "enable_partials": True,
-                    "max_delay": 2.0,
+                    "max_delay": SM_MAX_DELAY,
                 },
                 "audio_format": {
                     "type": "raw",

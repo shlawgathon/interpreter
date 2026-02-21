@@ -9,7 +9,9 @@ let processorNode: AudioWorkletNode | null = null;
 let processorMonitorGain: GainNode | null = null;
 let playbackContext: AudioContext | null = null;
 let playbackElement: HTMLAudioElement | null = null;
-let playbackQueue: Promise<void> = Promise.resolve();
+let playbackGeneration = 0;
+let currentPlaybackUrl: string | null = null;
+let fallbackSource: AudioBufferSourceNode | null = null;
 
 // The device ID for translated audio output (e.g. BlackHole)
 let outputDeviceId: string | null = null;
@@ -97,6 +99,21 @@ function getPlaybackElement(): HTMLAudioElement {
     playbackElement.preload = "auto";
   }
   return playbackElement;
+}
+
+function clearPlaybackObjectUrl(): void {
+  if (currentPlaybackUrl) {
+    URL.revokeObjectURL(currentPlaybackUrl);
+    currentPlaybackUrl = null;
+  }
+}
+
+function stopPlaybackElement(): void {
+  if (!playbackElement) return;
+  playbackElement.pause();
+  playbackElement.removeAttribute("src");
+  playbackElement.load();
+  clearPlaybackObjectUrl();
 }
 
 async function applyPlaybackSink(
@@ -236,11 +253,17 @@ function stopCapture(): void {
   console.log("[Offscreen] Capture stopped");
 }
 
-async function playUsingAudioElement(bytes: Uint8Array): Promise<void> {
+async function playUsingAudioElement(
+  bytes: Uint8Array,
+  generation: number
+): Promise<void> {
   const element = getPlaybackElement();
   if (outputDeviceId) {
     await applyPlaybackSink(element, outputDeviceId);
   }
+  if (generation !== playbackGeneration) return;
+
+  stopPlaybackElement();
 
   const rawBuffer = bytes.buffer;
   const audioBuffer = rawBuffer instanceof ArrayBuffer
@@ -248,38 +271,32 @@ async function playUsingAudioElement(bytes: Uint8Array): Promise<void> {
     : new Uint8Array(bytes).buffer;
   const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
   const url = URL.createObjectURL(blob);
+  currentPlaybackUrl = url;
   element.src = url;
   element.currentTime = 0;
-  try {
-    await element.play();
-    console.log("[Offscreen] Audio element play() started");
-    await new Promise<void>((resolve, reject) => {
-      const onEnded = () => {
-        cleanup();
-        resolve();
-      };
-      const onError = () => {
-        cleanup();
-        reject(new Error("Audio element playback failed"));
-      };
-      const cleanup = () => {
-        element.removeEventListener("ended", onEnded);
-        element.removeEventListener("error", onError);
-        URL.revokeObjectURL(url);
-      };
-      element.addEventListener("ended", onEnded, { once: true });
-      element.addEventListener("error", onError, { once: true });
-    });
-  } finally {
-    if (element.src === url) {
-      element.removeAttribute("src");
-      element.load();
-      URL.revokeObjectURL(url);
+  element.onended = () => {
+    if (currentPlaybackUrl === url) {
+      stopPlaybackElement();
     }
+  };
+  element.onerror = () => {
+    if (currentPlaybackUrl === url) {
+      stopPlaybackElement();
+    }
+  };
+
+  await element.play();
+  if (generation !== playbackGeneration) {
+    stopPlaybackElement();
+    return;
   }
+  console.log("[Offscreen] Audio element play() started");
 }
 
-async function playUsingAudioContextFallback(bytes: Uint8Array): Promise<void> {
+async function playUsingAudioContextFallback(
+  bytes: Uint8Array,
+  generation: number
+): Promise<void> {
   try {
     // Fallback path for non-MP3 payloads.
     if (!playbackContext || playbackContext.state === "closed") {
@@ -295,11 +312,29 @@ async function playUsingAudioContextFallback(bytes: Uint8Array): Promise<void> {
     for (let i = 0; i < float32.length; i++) {
       float32[i] = view.getInt16(i * 2, true) / 32768;
     }
+    if (generation !== playbackGeneration) return;
+
+    if (fallbackSource) {
+      try {
+        fallbackSource.stop();
+      } catch {
+        // Ignore if already stopped.
+      }
+      fallbackSource.disconnect();
+      fallbackSource = null;
+    }
+
     const buffer = playbackContext.createBuffer(1, float32.length, 24000);
     buffer.getChannelData(0).set(float32);
     const source = playbackContext.createBufferSource();
     source.buffer = buffer;
     source.connect(playbackContext.destination);
+    fallbackSource = source;
+    source.onended = () => {
+      if (fallbackSource === source) {
+        fallbackSource = null;
+      }
+    };
     source.start();
   } catch (err) {
     console.error("[Offscreen] Playback fallback error:", err);
@@ -313,21 +348,14 @@ function playTranslatedAudio(audioData: number[]): void {
     audioData.length
   );
   const bytes = new Uint8Array(audioData);
-  playbackQueue = playbackQueue
-    .then(async () => {
-      try {
-        await playUsingAudioElement(bytes);
-      } catch (err) {
-        console.warn(
-          "[Offscreen] Audio element playback failed; trying PCM fallback:",
-          err
-        );
-        await playUsingAudioContextFallback(bytes);
-      }
-    })
-    .catch((err) => {
-      console.error("[Offscreen] Playback queue error:", err);
-    });
+  const generation = ++playbackGeneration;
+  void playUsingAudioElement(bytes, generation).catch(async (err) => {
+    console.warn(
+      "[Offscreen] Audio element playback failed; trying PCM fallback:",
+      err
+    );
+    await playUsingAudioContextFallback(bytes, generation);
+  });
 }
 
 // ── Message Listener ──

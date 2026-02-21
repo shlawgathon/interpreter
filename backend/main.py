@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -70,6 +71,15 @@ async def websocket_translate(ws: WebSocket):
     speechmatics_key = os.getenv("SPEECHMATICS_API_KEY", "")
     minimax_key = os.getenv("MINIMAX_API_KEY", "")
     minimax_group_id = os.getenv("MINIMAX_GROUP_ID", "")
+    translation_trigger_chars = int(
+        os.getenv("TRANSLATION_TRIGGER_CHAR_THRESHOLD", "24")
+    )
+    translation_partial_min_delta_chars = int(
+        os.getenv("TRANSLATION_PARTIAL_MIN_DELTA_CHARS", "12")
+    )
+    translation_partial_min_interval = (
+        int(os.getenv("TRANSLATION_PARTIAL_MIN_INTERVAL_MS", "300")) / 1000.0
+    )
 
     speechmatics: SpeechmaticsClient | None = None
     minimax = MinimaxClient(api_key=minimax_key, group_id=minimax_group_id)
@@ -78,7 +88,7 @@ async def websocket_translate(ws: WebSocket):
     # Buffer for accumulating transcript before translation
     transcript_buffer = ""
     translation_lock = asyncio.Lock()
-    translation_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    translation_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1)
     translation_worker_task: asyncio.Task | None = None
 
     async def safe_send_json(payload: dict) -> bool:
@@ -106,6 +116,13 @@ async def websocket_translate(ws: WebSocket):
     async def enqueue_translation(text: str) -> None:
         if not text.strip() or not connection_open:
             return
+        # Keep queue low-latency by dropping stale pending items.
+        while not translation_queue.empty():
+            try:
+                translation_queue.get_nowait()
+                translation_queue.task_done()
+            except asyncio.QueueEmpty:
+                break
         await translation_queue.put(text.strip())
 
     async def translation_worker() -> None:
@@ -140,7 +157,7 @@ async def websocket_translate(ws: WebSocket):
 
                 # Translate when we have enough text (sentence-ish)
                 if (
-                    len(transcript_buffer) > 20
+                    len(transcript_buffer) > translation_trigger_chars
                     or transcript_buffer.rstrip().endswith((".", "!", "?", "。", "！", "？"))
                 ):
                     await enqueue_translation(transcript_buffer.strip())
@@ -160,6 +177,8 @@ async def websocket_translate(ws: WebSocket):
 
                 translated_chunks: list[str] = []
                 translated = ""
+                last_partial_emit_at = 0.0
+                last_partial_emit_len = 0
                 async for chunk in minimax.translate_stream(
                     text=text,
                     source_language=src_name,
@@ -170,12 +189,22 @@ async def websocket_translate(ws: WebSocket):
                     translated_chunks.append(chunk)
                     translated = "".join(translated_chunks).strip()
                     if translated:
-                        sent = await safe_send_json({
-                            "type": "translated_text_partial",
-                            "text": translated,
-                        })
-                        if not sent:
-                            return
+                        now = time.monotonic()
+                        delta_len = len(translated) - last_partial_emit_len
+                        should_emit_partial = (
+                            delta_len >= translation_partial_min_delta_chars
+                            or (now - last_partial_emit_at) >= translation_partial_min_interval
+                            or translated.endswith((".", "!", "?", "。", "！", "？"))
+                        )
+                        if should_emit_partial:
+                            sent = await safe_send_json({
+                                "type": "translated_text_partial",
+                                "text": translated,
+                            })
+                            if not sent:
+                                return
+                            last_partial_emit_at = now
+                            last_partial_emit_len = len(translated)
 
                 # Fallback if streaming returned no text.
                 if not translated:
@@ -263,6 +292,12 @@ async def websocket_translate(ws: WebSocket):
         connection_open = False
 
         if translation_worker_task:
+            while not translation_queue.empty():
+                try:
+                    translation_queue.get_nowait()
+                    translation_queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
             await translation_queue.put(None)
             try:
                 await translation_worker_task
