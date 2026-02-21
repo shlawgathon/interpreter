@@ -14,11 +14,9 @@ A Chrome extension + FastAPI backend that translates live audio from web chat ap
 │                                                                ▼   │
 │                                                     FastAPI Backend │
 │                                                       │            │
-│                                              Speechmatics STT      │
+│                                              Speechmatics STT + RT Translation │
 │                                                       │            │
-│                                              MiniMax Translation    │
-│                                                       │            │
-│                                              MiniMax TTS (2.8)     │
+│                                TTS Provider (MiniMax 2.8 or Speechmatics preview) │
 │                                                       │            │
 │  Offscreen Doc ◀── Service Worker ◀── Translated Audio ◀──────┘   │
 │   (playback via selected output device)                            │
@@ -116,9 +114,23 @@ TRANSLATION_PARTIAL_MIN_INTERVAL_MS=300
 
 # Speechmatics finalization speed
 SPEECHMATICS_MAX_DELAY=1.0
+SPEECHMATICS_RT_WS_URL=wss://eu.rt.speechmatics.com/v2/
+
+# Translation provider mode
+USE_SPEECHMATICS_TRANSLATION=1
+SPEECHMATICS_TRANSLATION_ENABLE_PARTIALS=1
+
+# TTS provider mode
+TTS_PROVIDER=minimax
+# TTS_PROVIDER=speechmatics
+# SPEECHMATICS_TTS_OUTPUT_FORMAT=wav_16000
+# SPEECHMATICS_TTS_VOICE_ID=sarah
 ```
 
 Guidance:
+- Keep `USE_SPEECHMATICS_TRANSLATION=1` for the lowest end-to-end delay.
+- Keep `TTS_PROVIDER=minimax` for multilingual production usage.
+- Use `TTS_PROVIDER=speechmatics` to test Speechmatics preview TTS (currently English-focused).
 - Lower `TRANSLATION_TRIGGER_CHAR_THRESHOLD` for faster response.
 - Higher `TRANSLATION_TRIGGER_CHAR_THRESHOLD` for fewer, larger chunks.
 - Lower `SPEECHMATICS_MAX_DELAY` for faster final transcripts.
@@ -129,5 +141,6 @@ Guidance:
 - **Extension**: React, TypeScript, Vite, CRXJS, Chrome MV3
 - **Backend**: Python, FastAPI, WebSocket, uv
 - **STT**: Speechmatics Real-time API
-- **Translation + TTS**: MiniMax M2 + Speech 2.8 Turbo
+- **Translation**: Speechmatics RT Translation (recommended low-latency mode) or MiniMax M2 fallback
+- **TTS**: MiniMax Speech 2.8 Turbo (default) or Speechmatics preview TTS (test option)
 - **Audio Routing**: BlackHole (macOS virtual audio loopback)

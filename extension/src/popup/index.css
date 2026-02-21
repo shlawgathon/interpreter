@@ -264,6 +264,28 @@ body {
   background: var(--bg-card-hover);
 }
 
+.output-device-detection {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: "Inter", sans-serif;
+}
+
+.output-routing-note {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: "Inter", sans-serif;
+}
+
 .device-hint {
   font-size: 10px;
   color: var(--success);

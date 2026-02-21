@@ -9,6 +9,7 @@ interface TranslationState {
   backendSocket: WebSocket | null;
   sourceLang: string;
   targetLang: string;
+  ttsProvider: "minimax" | "speechmatics";
   outputDeviceId: string | null;
 }
 
@@ -18,12 +19,18 @@ const state: TranslationState = {
   backendSocket: null,
   sourceLang: "en",
   targetLang: "es",
+  ttsProvider: "minimax",
   outputDeviceId: null,
 };
 
 // ── Message Types ──
 type Message =
-  | { type: "start-capture"; sourceLang: string; targetLang: string }
+  | {
+      type: "start-capture";
+      sourceLang: string;
+      targetLang: string;
+      ttsProvider?: "minimax" | "speechmatics";
+    }
   | { type: "stop-capture" }
   | { type: "audio-data"; data: number[] }
   | { type: "translated-audio"; data: number[] }
@@ -75,6 +82,7 @@ function connectToBackend(): void {
         type: "config",
         source_lang: state.sourceLang,
         target_lang: state.targetLang,
+        tts_provider: state.ttsProvider,
       })
     );
     broadcastToPopup({ type: "status", status: "connected" });
@@ -151,10 +159,14 @@ function disconnectBackend(): void {
 // ── Start / Stop Capture ──
 async function startCapture(
   sourceLang: string,
-  targetLang: string
+  targetLang: string,
+  ttsProvider?: "minimax" | "speechmatics"
 ): Promise<void> {
   state.sourceLang = sourceLang;
   state.targetLang = targetLang;
+  if (ttsProvider === "speechmatics" || ttsProvider === "minimax") {
+    state.ttsProvider = ttsProvider;
+  }
 
   // Get active tab
   const [tab] = await chrome.tabs.query({
@@ -233,7 +245,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   switch (message.type) {
     case "start-capture":
-      startCapture(message.sourceLang, message.targetLang)
+      startCapture(message.sourceLang, message.targetLang, message.ttsProvider)
         .then(() => sendResponse({ success: true }))
         .catch((e) => sendResponse({ success: false, error: e.message }));
       return true; // async response
@@ -276,6 +288,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         isCapturing: state.isCapturing,
         sourceLang: state.sourceLang,
         targetLang: state.targetLang,
+        ttsProvider: state.ttsProvider,
         outputDeviceId: state.outputDeviceId,
       });
       return false;
