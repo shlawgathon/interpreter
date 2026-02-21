@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+backend/.venv/
+
+# Build output
+extension/dist/
+
+# Environment
+backend/.env
+
+# OS
+.DS_Store

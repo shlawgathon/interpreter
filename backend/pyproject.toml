@@ -1,0 +1,15 @@
+[project]
+name = "interpreter-backend"
+version = "1.0.0"
+description = "FastAPI WebSocket backend for live speaker translation"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=13.0",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.0.0",
+]
+
+[dependency-groups]
+dev = []
