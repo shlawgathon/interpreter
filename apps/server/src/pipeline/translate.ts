@@ -1,7 +1,7 @@
 import { getLanguageName } from "@interpreter/shared";
 import type { SessionManager } from "../session/manager";
 import { synthesizeSpeech } from "./tts";
-import { persistTranscript } from "../convex/client";
+
 
 interface TranslateOpts {
   text: string;
@@ -83,15 +83,6 @@ export async function translateAndSpeak(opts: TranslateOpts): Promise<void> {
       sessionId, speakerId, speakerName,
       text, translated, targetLang, true,
     );
-
-    persistTranscript({
-      sessionId,
-      participantId: speakerId,
-      speakerName,
-      originalText: text,
-      originalLanguage: sourceLang,
-      translations: { [targetLang]: translated },
-    });
 
     await synthesizeSpeech({
       text: translated,
