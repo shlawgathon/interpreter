@@ -76,7 +76,7 @@ export default function App() {
   const [speechmaticsKey, setSpeechmaticsKey] = useState("");
   const [minimaxKey, setMinimaxKey] = useState("");
   const [minimaxGroupId, setMinimaxGroupId] = useState("");
-  const [ttsProvider, setTtsProvider] = useState<TTSProvider>("minimax");
+  const [ttsProvider, setTtsProvider] = useState<TTSProvider>("speechmatics");
   const [backendUrl, setBackendUrl] = useState("ws://localhost:8000");
 
   const transcriptRef = useRef<HTMLDivElement>(null);

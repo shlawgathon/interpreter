@@ -19,7 +19,7 @@ const state: TranslationState = {
   backendSocket: null,
   sourceLang: "en",
   targetLang: "es",
-  ttsProvider: "minimax",
+  ttsProvider: "speechmatics",
   outputDeviceId: null,
 };
 

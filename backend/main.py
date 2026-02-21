@@ -75,7 +75,7 @@ async def websocket_translate(ws: WebSocket):
     use_speechmatics_translation = os.getenv(
         "USE_SPEECHMATICS_TRANSLATION", "1"
     ).strip().lower() not in {"0", "false", "no"}
-    tts_provider = os.getenv("TTS_PROVIDER", "minimax").strip().lower() or "minimax"
+    tts_provider = os.getenv("TTS_PROVIDER", "speechmatics").strip().lower() or "speechmatics"
     translation_trigger_chars = int(
         os.getenv("TRANSLATION_TRIGGER_CHAR_THRESHOLD", "24")
     )
