@@ -121,16 +121,16 @@ USE_SPEECHMATICS_TRANSLATION=1
 SPEECHMATICS_TRANSLATION_ENABLE_PARTIALS=1
 
 # TTS provider mode
-TTS_PROVIDER=minimax
-# TTS_PROVIDER=speechmatics
+TTS_PROVIDER=speechmatics
+# TTS_PROVIDER=minimax
 # SPEECHMATICS_TTS_OUTPUT_FORMAT=wav_16000
 # SPEECHMATICS_TTS_VOICE_ID=sarah
 ```
 
 Guidance:
 - Keep `USE_SPEECHMATICS_TRANSLATION=1` for the lowest end-to-end delay.
-- Keep `TTS_PROVIDER=minimax` for multilingual production usage.
-- Use `TTS_PROVIDER=speechmatics` to test Speechmatics preview TTS (currently English-focused).
+- `TTS_PROVIDER=speechmatics` is now the default.
+- Switch to `TTS_PROVIDER=minimax` for broader multilingual voice coverage.
 - Lower `TRANSLATION_TRIGGER_CHAR_THRESHOLD` for faster response.
 - Higher `TRANSLATION_TRIGGER_CHAR_THRESHOLD` for fewer, larger chunks.
 - Lower `SPEECHMATICS_MAX_DELAY` for faster final transcripts.
