@@ -2,7 +2,7 @@
 Speechmatics Real-time STT WebSocket Client
 
 Connects to Speechmatics RT API, streams PCM audio, receives transcripts.
-Docs: https://docs.speechmatics.com/rt-api-ref
+Docs: https://docs.speechmatics.com/api-ref/realtime-transcription-websocket
 """
 
 import asyncio
@@ -16,11 +16,18 @@ from websockets.client import WebSocketClientProtocol
 
 logger = logging.getLogger("interpreter.speechmatics")
 
-# Speechmatics RT endpoint
-SM_RT_URL = "wss://eu2.rt.speechmatics.com/v2"
+# Speechmatics RT endpoint (WebSocket)
+# Docs reference: wss://eu.rt.speechmatics.com/v2/
+SM_RT_URL = os.getenv(
+    "SPEECHMATICS_RT_WS_URL",
+    "wss://eu.rt.speechmatics.com/v2/",
+).strip()
 SM_PING_INTERVAL = 20
 SM_PING_TIMEOUT = 30
 SM_MAX_DELAY = float(os.getenv("SPEECHMATICS_MAX_DELAY", "1.0"))
+SM_TRANSLATION_ENABLE_PARTIALS = os.getenv(
+    "SPEECHMATICS_TRANSLATION_ENABLE_PARTIALS", "1"
+).strip().lower() not in {"0", "false", "no"}
 
 # Language code mapping
 SM_LANGUAGE_MAP = {
@@ -48,11 +55,18 @@ class SpeechmaticsClient:
         self,
         api_key: str,
         language: str = "en",
+        target_language: str | None = None,
         on_transcript: Callable[[str, bool], Awaitable[None]] | None = None,
+        on_translation: Callable[[str, bool], Awaitable[None]] | None = None,
     ):
         self.api_key = api_key
         self.language = SM_LANGUAGE_MAP.get(language, language)
+        self.target_language = (
+            SM_LANGUAGE_MAP.get(target_language, target_language)
+            if target_language else None
+        )
         self.on_transcript = on_transcript
+        self.on_translation = on_translation
         self.ws: WebSocketClientProtocol | None = None
         self.is_connected = False
         self._receive_task: asyncio.Task | None = None
@@ -60,8 +74,13 @@ class SpeechmaticsClient:
 
     async def connect(self) -> None:
         """Connect to Speechmatics RT WebSocket."""
-        url = f"{SM_RT_URL}"
+        url = SM_RT_URL
+        if not (url.startswith("wss://") or url.startswith("ws://")):
+            raise ValueError(
+                f"SPEECHMATICS_RT_WS_URL must be a websocket URL (ws:// or wss://), got: {url}"
+            )
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        logger.info("Connecting to Speechmatics RT websocket: %s", url)
 
         try:
             self.ws = await websockets.connect(
@@ -86,6 +105,11 @@ class SpeechmaticsClient:
                     "sample_rate": 16000,
                 },
             }
+            if self.target_language:
+                start_msg["translation_config"] = {
+                    "target_languages": [self.target_language],
+                    "enable_partials": SM_TRANSLATION_ENABLE_PARTIALS,
+                }
             await self.ws.send(json.dumps(start_msg))
 
             # Wait for RecognitionStarted (skip info messages like concurrent_session_usage)
@@ -131,6 +155,16 @@ class SpeechmaticsClient:
                     if text and self.on_transcript:
                         await self.on_transcript(text, True)
 
+                elif msg_type == "AddPartialTranslation":
+                    text = self._extract_translation_text(msg)
+                    if text and self.on_translation:
+                        await self.on_translation(text, False)
+
+                elif msg_type == "AddTranslation":
+                    text = self._extract_translation_text(msg)
+                    if text and self.on_translation:
+                        await self.on_translation(text, True)
+
                 elif msg_type == "EndOfTranscript":
                     logger.info("Speechmatics: End of transcript")
                     break
@@ -156,6 +190,18 @@ class SpeechmaticsClient:
                 if content:
                     words.append(content)
         return " ".join(words)
+
+    def _extract_translation_text(self, msg: dict) -> str:
+        """Extract translated text from Speechmatics translation messages."""
+        results = msg.get("results", [])
+        chunks: list[str] = []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            content = result.get("content", "")
+            if isinstance(content, str) and content:
+                chunks.append(content)
+        return " ".join(chunks).strip()
 
     async def send_audio(self, audio_data: bytes) -> None:
         """Send raw PCM audio to Speechmatics."""

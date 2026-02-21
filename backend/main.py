@@ -1,6 +1,6 @@
 """
 Interpreter Backend — FastAPI WebSocket Server
-Handles: Audio → Speechmatics STT → MiniMax Translation → MiniMax TTS → Audio
+Handles: Audio → STT/Translation → TTS → Audio
 """
 
 import asyncio
@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from services.speechmatics_client import SpeechmaticsClient
 from services.minimax_client import MinimaxClient, get_language_name
+from services.speechmatics_tts_client import SpeechmaticsTTSClient
 
 load_dotenv()
 
@@ -60,7 +61,7 @@ async def websocket_translate(ws: WebSocket):
     - Server sends back:
       - JSON: { type: "transcript", text: "...", is_final: bool }
       - JSON: { type: "translated_text", text: "..." }
-      - Binary: translated audio (MP3 from MiniMax TTS)
+      - Binary: translated audio (audio bytes from selected TTS provider)
     """
     await ws.accept()
     logger.info("Client connected")
@@ -71,6 +72,10 @@ async def websocket_translate(ws: WebSocket):
     speechmatics_key = os.getenv("SPEECHMATICS_API_KEY", "")
     minimax_key = os.getenv("MINIMAX_API_KEY", "")
     minimax_group_id = os.getenv("MINIMAX_GROUP_ID", "")
+    use_speechmatics_translation = os.getenv(
+        "USE_SPEECHMATICS_TRANSLATION", "1"
+    ).strip().lower() not in {"0", "false", "no"}
+    tts_provider = os.getenv("TTS_PROVIDER", "minimax").strip().lower() or "minimax"
     translation_trigger_chars = int(
         os.getenv("TRANSLATION_TRIGGER_CHAR_THRESHOLD", "24")
     )
@@ -83,6 +88,7 @@ async def websocket_translate(ws: WebSocket):
 
     speechmatics: SpeechmaticsClient | None = None
     minimax = MinimaxClient(api_key=minimax_key, group_id=minimax_group_id)
+    speechmatics_tts = SpeechmaticsTTSClient(api_key=speechmatics_key)
     connection_open = True
 
     # Buffer for accumulating transcript before translation
@@ -131,7 +137,10 @@ async def websocket_translate(ws: WebSocket):
             try:
                 if item is None:
                     return
-                await translate_and_speak(item)
+                if use_speechmatics_translation:
+                    await speak_translated_text(item)
+                else:
+                    await translate_and_speak(item)
             finally:
                 translation_queue.task_done()
 
@@ -153,6 +162,9 @@ async def websocket_translate(ws: WebSocket):
                 return
 
             if is_final and text.strip():
+                if use_speechmatics_translation:
+                    return
+
                 transcript_buffer += " " + text.strip()
 
                 # Translate when we have enough text (sentence-ish)
@@ -164,6 +176,68 @@ async def websocket_translate(ws: WebSocket):
                     transcript_buffer = ""
         except (ConnectionError, RuntimeError) as e:
             logger.error("Error in on_transcript: %s", e)
+
+    async def on_translation(text: str, is_final: bool):
+        """Called when Speechmatics produces translated text."""
+        if not connection_open:
+            return
+
+        try:
+            if is_final:
+                sent = await safe_send_json({
+                    "type": "translated_text",
+                    "text": text,
+                })
+                if not sent:
+                    return
+                await enqueue_translation(text)
+            else:
+                await safe_send_json({
+                    "type": "translated_text_partial",
+                    "text": text,
+                })
+        except (ConnectionError, RuntimeError) as e:
+            logger.error("Error in on_translation: %s", e)
+
+    async def synthesize_tts(translated_text: str) -> bytes | None:
+        if tts_provider == "speechmatics":
+            audio_data = await speechmatics_tts.text_to_speech(
+                text=translated_text,
+                language=target_lang,
+            )
+            if audio_data:
+                return audio_data
+            logger.warning(
+                "Speechmatics TTS returned no audio for target language '%s'; "
+                "falling back to MiniMax TTS.",
+                target_lang,
+            )
+
+        return await minimax.text_to_speech(
+            text=translated_text,
+            language=target_lang,
+        )
+
+    async def speak_translated_text(translated_text: str):
+        """Generate and send TTS audio from already-translated text."""
+        async with translation_lock:
+            if not connection_open or not translated_text.strip():
+                return
+
+            try:
+                logger.info("[Translate] (Speechmatics) → %s", translated_text)
+
+                audio_data = await synthesize_tts(translated_text)
+                if audio_data:
+                    sent = await safe_send_bytes(audio_data)
+                    if sent:
+                        logger.info("[TTS] Sent %d bytes of audio", len(audio_data))
+            except (httpx.HTTPStatusError, ConnectionError, ValueError) as e:
+                logger.error("TTS error: %s", e)
+                await safe_send_json({
+                    "type": "error",
+                    "message": str(e),
+                })
 
     async def translate_and_speak(text: str):
         """Translate text and send back TTS audio."""
@@ -229,10 +303,7 @@ async def websocket_translate(ws: WebSocket):
                 logger.info("[Translate] %s → %s", text, translated)
 
                 # Step 2: TTS via MiniMax Speech
-                audio_data = await minimax.text_to_speech(
-                    text=translated,
-                    language=target_lang,
-                )
+                audio_data = await synthesize_tts(translated)
 
                 if audio_data:
                     # Send binary audio back
@@ -263,7 +334,15 @@ async def websocket_translate(ws: WebSocket):
                 if msg.get("type") == "config":
                     source_lang = msg.get("source_lang", "en")
                     target_lang = msg.get("target_lang", "es")
+                    requested_tts_provider = str(msg.get("tts_provider", "")).strip().lower()
+                    if requested_tts_provider in {"minimax", "speechmatics"}:
+                        tts_provider = requested_tts_provider
                     logger.info("Config: %s → %s", source_lang, target_lang)
+                    logger.info(
+                        "Translation provider: %s",
+                        "Speechmatics" if use_speechmatics_translation else "MiniMax",
+                    )
+                    logger.info("TTS provider: %s", tts_provider)
 
                     # Initialize Speechmatics with the source language
                     if speechmatics:
@@ -272,7 +351,9 @@ async def websocket_translate(ws: WebSocket):
                     speechmatics = SpeechmaticsClient(
                         api_key=speechmatics_key,
                         language=source_lang,
+                        target_language=target_lang if use_speechmatics_translation else None,
                         on_transcript=on_transcript,
+                        on_translation=on_translation if use_speechmatics_translation else None,
                     )
                     await speechmatics.connect()
                     logger.info("Speechmatics connected")
@@ -306,5 +387,6 @@ async def websocket_translate(ws: WebSocket):
 
         if speechmatics:
             await speechmatics.close()
+        await speechmatics_tts.close()
         await minimax.close()
         logger.info("Session cleaned up")

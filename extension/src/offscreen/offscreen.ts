@@ -101,6 +101,24 @@ function getPlaybackElement(): HTMLAudioElement {
   return playbackElement;
 }
 
+function detectAudioMimeType(bytes: Uint8Array): string {
+  // RIFF....WAVE
+  const isWav =
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && // R
+    bytes[1] === 0x49 && // I
+    bytes[2] === 0x46 && // F
+    bytes[3] === 0x46 && // F
+    bytes[8] === 0x57 && // W
+    bytes[9] === 0x41 && // A
+    bytes[10] === 0x56 && // V
+    bytes[11] === 0x45; // E
+
+  if (isWav) return "audio/wav";
+  // Default to MP3 for MiniMax.
+  return "audio/mpeg";
+}
+
 function clearPlaybackObjectUrl(): void {
   if (currentPlaybackUrl) {
     URL.revokeObjectURL(currentPlaybackUrl);
@@ -146,7 +164,7 @@ async function applyPlaybackSink(
       type: "error",
       target: "background",
       message:
-        "Failed to route translated audio to selected output device. Re-select BlackHole and check Chrome media permissions.",
+        "Failed to route translated audio to detected output device. Verify BlackHole is detected and Chrome media permissions are granted.",
     });
   }
 }
@@ -269,7 +287,8 @@ async function playUsingAudioElement(
   const audioBuffer = rawBuffer instanceof ArrayBuffer
     ? rawBuffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
     : new Uint8Array(bytes).buffer;
-  const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
+  const mimeType = detectAudioMimeType(bytes);
+  const blob = new Blob([audioBuffer], { type: mimeType });
   const url = URL.createObjectURL(blob);
   currentPlaybackUrl = url;
   element.src = url;

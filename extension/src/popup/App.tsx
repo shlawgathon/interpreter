@@ -7,17 +7,8 @@ interface TranscriptEntry {
   timestamp: number;
 }
 
-interface AudioDevice {
-  deviceId: string;
-  label: string;
-}
-
-type PickerMediaDevices = MediaDevices & {
-  selectAudioOutput?: (options?: { deviceId?: string }) => Promise<MediaDeviceInfo>;
-};
-
 type ExtStatus = "idle" | "connected" | "capturing" | "disconnected" | "error";
-const PICK_OUTPUT_OPTION_VALUE = "__pick_output_device__";
+type TTSProvider = "minimax" | "speechmatics";
 
 export default function App() {
   const [sourceLang, setSourceLang] = useState("en");
@@ -30,103 +21,27 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Output device
-  const [outputDevices, setOutputDevices] = useState<AudioDevice[]>([]);
-  const [selectedDevice, setSelectedDevice] = useState("");
-
   // Settings
   const [speechmaticsKey, setSpeechmaticsKey] = useState("");
   const [minimaxKey, setMinimaxKey] = useState("");
   const [minimaxGroupId, setMinimaxGroupId] = useState("");
+  const [ttsProvider, setTtsProvider] = useState<TTSProvider>("minimax");
   const [backendUrl, setBackendUrl] = useState("ws://localhost:8000");
-  const canPickOutputDevice = typeof (navigator.mediaDevices as PickerMediaDevices).selectAudioOutput === "function";
 
   const transcriptRef = useRef<HTMLDivElement>(null);
-  const selectedDeviceRef = useRef("");
-
-  useEffect(() => {
-    selectedDeviceRef.current = selectedDevice;
-  }, [selectedDevice]);
-
-  const applyOutputDevices = useCallback((devices: AudioDevice[]) => {
-    setOutputDevices(devices);
-
-    const selected = selectedDeviceRef.current;
-    if (selected && devices.some((d) => d.deviceId === selected)) return;
-    if (selected) return;
-
-    const blackhole = devices.find((d) =>
-      d.label.toLowerCase().includes("blackhole")
-    );
-    if (!blackhole) return;
-
-    selectedDeviceRef.current = blackhole.deviceId;
-    setSelectedDevice(blackhole.deviceId);
-    chrome.storage.sync.set({ outputDeviceId: blackhole.deviceId });
-    chrome.runtime.sendMessage({
-      type: "set-output-device",
-      target: "background",
-      deviceId: blackhole.deviceId,
-    });
-  }, []);
-
-  const loadOutputDevices = useCallback(async () => {
-    try {
-      const allDevices = await navigator.mediaDevices.enumerateDevices();
-      const outputMap = new Map<string, AudioDevice>();
-      for (const device of allDevices) {
-        if (device.kind !== "audiooutput") continue;
-        if (!device.deviceId || device.deviceId === "default") continue;
-        if (outputMap.has(device.deviceId)) continue;
-        outputMap.set(device.deviceId, {
-          deviceId: device.deviceId,
-          label: device.label || `Output ${device.deviceId.slice(0, 8)}`,
-        });
-      }
-      applyOutputDevices(Array.from(outputMap.values()));
-    } catch (err) {
-      console.error("[Popup] Failed to enumerate output devices:", err);
-    }
-  }, [applyOutputDevices]);
-
-  const pickOutputDevice = useCallback(async (): Promise<AudioDevice | null> => {
-    const mediaDevices = navigator.mediaDevices as PickerMediaDevices;
-    if (typeof mediaDevices.selectAudioOutput !== "function") {
-      console.warn("[Popup] selectAudioOutput is unavailable in this Chrome build.");
-      return null;
-    }
-
-    try {
-      const picked = await mediaDevices.selectAudioOutput(
-        selectedDeviceRef.current
-          ? { deviceId: selectedDeviceRef.current }
-          : undefined
-      );
-      return {
-        deviceId: picked.deviceId,
-        label: picked.label || "Selected output device",
-      };
-    } catch (err) {
-      console.warn("[Popup] Output device selection cancelled or denied", err);
-      return null;
-    }
-  }, []);
-
-  const requestMicPermissionForLabels = useCallback(async (): Promise<boolean> => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-      return true;
-    } catch (err) {
-      console.warn("[Popup] Microphone permission request failed:", err);
-      return false;
-    }
-  }, []);
 
   // Load saved settings
   useEffect(() => {
     chrome.storage.sync.get(
-      ["sourceLang", "targetLang", "speechmaticsKey", "minimaxKey", "minimaxGroupId", "backendUrl", "outputDeviceId"],
+      [
+        "sourceLang",
+        "targetLang",
+        "speechmaticsKey",
+        "minimaxKey",
+        "minimaxGroupId",
+        "backendUrl",
+        "ttsProvider",
+      ],
       (data) => {
         if (data.sourceLang) setSourceLang(data.sourceLang);
         if (data.targetLang) setTargetLang(data.targetLang);
@@ -134,69 +49,31 @@ export default function App() {
         if (data.minimaxKey) setMinimaxKey(data.minimaxKey);
         if (data.minimaxGroupId) setMinimaxGroupId(data.minimaxGroupId);
         if (data.backendUrl) setBackendUrl(data.backendUrl);
-        if (data.outputDeviceId) {
-          selectedDeviceRef.current = data.outputDeviceId;
-          setSelectedDevice(data.outputDeviceId);
+        if (data.ttsProvider === "speechmatics" || data.ttsProvider === "minimax") {
+          setTtsProvider(data.ttsProvider);
         }
-
-        void loadOutputDevices();
       }
     );
+
+    // Force system-default routing mode (no per-device selection/detection in popup).
+    chrome.runtime.sendMessage({
+      type: "set-output-device",
+      target: "background",
+      deviceId: "",
+    });
 
     // Get current state from background
     chrome.runtime.sendMessage({ type: "get-state", target: "background" }, (res) => {
       if (res) {
         setIsCapturing(res.isCapturing);
         setStatus(res.isCapturing ? "capturing" : "idle");
+        if (res.ttsProvider === "speechmatics" || res.ttsProvider === "minimax") {
+          setTtsProvider(res.ttsProvider);
+        }
       }
     });
 
-  }, [loadOutputDevices]);
-
-  const refreshDevices = async () => {
-    await loadOutputDevices();
-
-    if (canPickOutputDevice) {
-      const picked = await pickOutputDevice();
-      if (!picked) return;
-
-      selectedDeviceRef.current = picked.deviceId;
-      setSelectedDevice(picked.deviceId);
-      chrome.storage.sync.set({ outputDeviceId: picked.deviceId });
-      chrome.runtime.sendMessage({
-        type: "set-output-device",
-        target: "background",
-        deviceId: picked.deviceId,
-      });
-      await loadOutputDevices();
-      return;
-    }
-
-    const granted = await requestMicPermissionForLabels();
-    await loadOutputDevices();
-    if (!granted) {
-      setErrorMsg(
-        "Output picker is unsupported here. Use System Default and set macOS output to BlackHole 2ch."
-      );
-      setStatus("error");
-      setTimeout(() => setErrorMsg(""), 7000);
-    }
-  };
-
-  const handleDeviceChange = async (deviceId: string) => {
-    if (deviceId === PICK_OUTPUT_OPTION_VALUE) {
-      await refreshDevices();
-      return;
-    }
-
-    setSelectedDevice(deviceId);
-    chrome.storage.sync.set({ outputDeviceId: deviceId });
-    chrome.runtime.sendMessage({
-      type: "set-output-device",
-      target: "background",
-      deviceId,
-    });
-  };
+  }, []);
 
   // Listen for messages from background
   useEffect(() => {
@@ -264,22 +141,21 @@ export default function App() {
       });
     } else {
       setErrorMsg("");
-      // Ensure output device is set before starting
-      if (selectedDevice) {
-        chrome.runtime.sendMessage({
-          type: "set-output-device",
-          target: "background",
-          deviceId: selectedDevice,
-        });
-      }
+      // Force system-default routing mode before starting.
+      chrome.runtime.sendMessage({
+        type: "set-output-device",
+        target: "background",
+        deviceId: "",
+      });
       chrome.runtime.sendMessage({
         type: "start-capture",
         target: "background",
         sourceLang,
         targetLang,
+        ttsProvider,
       });
     }
-  }, [isCapturing, sourceLang, targetLang, selectedDevice]);
+  }, [isCapturing, sourceLang, targetLang, ttsProvider]);
 
   // Swap languages
   const handleSwap = () => {
@@ -296,8 +172,8 @@ export default function App() {
       speechmaticsKey,
       minimaxKey,
       minimaxGroupId,
+      ttsProvider,
       backendUrl,
-      outputDeviceId: selectedDevice,
     });
     setShowSettings(false);
   };
@@ -311,11 +187,6 @@ export default function App() {
       case "error": return errorMsg || "Error";
       default: return "Ready";
     }
-  };
-
-  const getSelectedDeviceLabel = (): string => {
-    const device = outputDevices.find((d) => d.deviceId === selectedDevice);
-    return device?.label || "Default";
   };
 
   return (
@@ -381,54 +252,16 @@ export default function App() {
         <div className="output-device-section">
           <div className="output-device-header">
             <span className="output-device-label">🔊 Translation Output</span>
-            <button
-              className="refresh-devices-btn"
-              onClick={refreshDevices}
-              title="Refresh devices"
-            >
-              ↻
-            </button>
           </div>
-          <select
-            className="output-device-select"
-            value={selectedDevice}
-            onChange={(e) => {
-              void handleDeviceChange(e.target.value);
-            }}
-            disabled={isCapturing}
-          >
-            <option value="">System Default</option>
-            {canPickOutputDevice && (
-              <option value={PICK_OUTPUT_OPTION_VALUE}>Choose Output Device…</option>
-            )}
-            {outputDevices.map((d) => (
-              <option key={d.deviceId} value={d.deviceId}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-          {selectedDevice && getSelectedDeviceLabel().toLowerCase().includes("blackhole") && (
-            <div className="device-hint">
-              ✓ BlackHole selected — set Meet mic to BlackHole too
-            </div>
-          )}
-          {!selectedDevice && (
-            <div className="device-hint warning">
-              ⚠ Select BlackHole to route audio into Meet
-            </div>
-          )}
-          {outputDevices.length === 0 && (
-            <div className="device-hint warning">
-              {canPickOutputDevice
-                ? "No selectable output devices listed yet. Use “Choose Output Device…”"
-                : "Per-device picker unavailable. Use System Default and set macOS output to BlackHole 2ch."}
-            </div>
-          )}
-          {!canPickOutputDevice && (
-            <div className="device-hint warning">
-              This Chrome build cannot pick output in popup. Click ↻ to retry mic-based enumeration.
-            </div>
-          )}
+          <div className="output-routing-note" aria-live="polite">
+            System Default (fixed)
+          </div>
+          <div className="device-hint warning">
+            Set macOS output to BlackHole 2ch, then set Meet microphone to BlackHole 2ch.
+          </div>
+          <div className="device-hint warning">
+            Popup device detection/selection is disabled because Chrome blocks it in this context.
+          </div>
         </div>
 
         {/* Start/Stop Button */}
@@ -476,6 +309,18 @@ export default function App() {
         {/* Settings Panel */}
         {showSettings && (
           <div className="settings-panel">
+            <div className="settings-input-group">
+              <label>TTS Provider</label>
+              <select
+                className="lang-select"
+                value={ttsProvider}
+                onChange={(e) => setTtsProvider(e.target.value as TTSProvider)}
+                disabled={isCapturing}
+              >
+                <option value="minimax">MiniMax</option>
+                <option value="speechmatics">Speechmatics</option>
+              </select>
+            </div>
             <div className="settings-input-group">
               <label>Speechmatics API Key</label>
               <input
