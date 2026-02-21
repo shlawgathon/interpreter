@@ -84,17 +84,23 @@ class SpeechmaticsClient:
             }
             await self.ws.send(json.dumps(start_msg))
 
-            # Wait for RecognitionStarted
-            response = await self.ws.recv()
-            msg = json.loads(response)
-            if msg.get("message") == "RecognitionStarted":
-                self.is_connected = True
-                logger.info(f"Speechmatics recognition started (lang={self.language})")
-                # Start receiving in background
-                self._receive_task = asyncio.create_task(self._receive_loop())
-            else:
-                logger.error(f"Unexpected response: {msg}")
-                raise ConnectionError(f"Failed to start recognition: {msg}")
+            # Wait for RecognitionStarted (skip info messages like concurrent_session_usage)
+            while True:
+                response = await asyncio.wait_for(self.ws.recv(), timeout=10)
+                msg = json.loads(response)
+                msg_type = msg.get("message", "")
+
+                if msg_type == "RecognitionStarted":
+                    self.is_connected = True
+                    logger.info(f"Speechmatics recognition started (lang={self.language})")
+                    self._receive_task = asyncio.create_task(self._receive_loop())
+                    break
+                elif msg_type == "Error":
+                    logger.error(f"Speechmatics error during connect: {msg}")
+                    raise ConnectionError(f"Failed to start recognition: {msg}")
+                else:
+                    # Info/warning messages (e.g. concurrent_session_usage) — log and skip
+                    logger.info(f"Speechmatics info: {msg_type or msg.get('type', 'unknown')}")
 
         except Exception as e:
             logger.error(f"Failed to connect to Speechmatics: {e}")
