@@ -1,0 +1,27 @@
+{
+  "name": "@interpreter/extension",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@interpreter/shared": "workspace:*",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "wxt": "^0.19",
+    "@wxt-dev/module-react": "^1",
+    "tailwindcss": "^4",
+    "@tailwindcss/postcss": "^4",
+    "postcss": "^8",
+    "typescript": "^5.7"
+  }
+}
