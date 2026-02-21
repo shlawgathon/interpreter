@@ -9,6 +9,7 @@ interface TranslationState {
   backendSocket: WebSocket | null;
   sourceLang: string;
   targetLang: string;
+  outputDeviceId: string | null;
 }
 
 const state: TranslationState = {
@@ -17,6 +18,7 @@ const state: TranslationState = {
   backendSocket: null,
   sourceLang: "en",
   targetLang: "es",
+  outputDeviceId: null,
 };
 
 // ── Message Types ──
@@ -26,9 +28,11 @@ type Message =
   | { type: "audio-data"; data: number[] }
   | { type: "translated-audio"; data: number[] }
   | { type: "transcript"; text: string; isFinal: boolean }
+  | { type: "translated-text-partial"; text: string }
   | { type: "translated-text"; text: string }
   | { type: "status"; status: string }
   | { type: "error"; message: string }
+  | { type: "set-output-device"; deviceId: string }
   | { type: "get-state" };
 
 // ── Offscreen Document Management ──
@@ -97,6 +101,11 @@ function connectToBackend(): void {
             type: "transcript",
             text: msg.text,
             isFinal: msg.is_final,
+          });
+        } else if (msg.type === "translated_text_partial") {
+          broadcastToPopup({
+            type: "translated-text-partial",
+            text: msg.text,
           });
         } else if (msg.type === "translated_text") {
           broadcastToPopup({
@@ -189,6 +198,7 @@ async function startCapture(
     type: "start-capture",
     target: "offscreen",
     streamId,
+    outputDeviceId: state.outputDeviceId,
   });
 
   state.isCapturing = true;
@@ -250,6 +260,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       break;
 
     case "set-output-device":
+      state.outputDeviceId = message.deviceId || null;
       // Forward to offscreen to set output device
       ensureOffscreenDocument().then(() => {
         chrome.runtime.sendMessage({
@@ -265,6 +276,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         isCapturing: state.isCapturing,
         sourceLang: state.sourceLang,
         targetLang: state.targetLang,
+        outputDeviceId: state.outputDeviceId,
       });
       return false;
   }

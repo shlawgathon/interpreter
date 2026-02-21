@@ -17,6 +17,8 @@ logger = logging.getLogger("interpreter.speechmatics")
 
 # Speechmatics RT endpoint
 SM_RT_URL = "wss://eu2.rt.speechmatics.com/v2"
+SM_PING_INTERVAL = 20
+SM_PING_TIMEOUT = 30
 
 # Language code mapping
 SM_LANGUAGE_MAP = {
@@ -63,8 +65,8 @@ class SpeechmaticsClient:
             self.ws = await websockets.connect(
                 url,
                 additional_headers=headers,
-                ping_interval=20,
-                ping_timeout=10,
+                ping_interval=SM_PING_INTERVAL,
+                ping_timeout=SM_PING_TIMEOUT,
             )
 
             # Send StartRecognition

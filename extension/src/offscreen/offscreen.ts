@@ -5,11 +5,18 @@
 let mediaStream: MediaStream | null = null;
 let audioContext: AudioContext | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
-let processorNode: ScriptProcessorNode | null = null;
+let processorNode: AudioWorkletNode | null = null;
+let processorMonitorGain: GainNode | null = null;
 let playbackContext: AudioContext | null = null;
+let playbackElement: HTMLAudioElement | null = null;
+let playbackQueue: Promise<void> = Promise.resolve();
 
 // The device ID for translated audio output (e.g. BlackHole)
 let outputDeviceId: string | null = null;
+
+type SinkAwareAudioElement = HTMLAudioElement & {
+  setSinkId?: (deviceId: string) => Promise<void>;
+};
 
 type SinkAwareAudioContext = AudioContext & {
   setSinkId?: (deviceId: string) => Promise<void>;
@@ -19,6 +26,8 @@ let hasReportedUnsupportedSinkRouting = false;
 // Target: 16kHz mono Int16 PCM for Speechmatics
 const TARGET_SAMPLE_RATE = 16000;
 const BUFFER_SIZE = 4096;
+const WORKLET_PROCESSOR_NAME = "pcm-capture-worklet";
+const CAPTURE_WORKLET_URL = chrome.runtime.getURL("capture-worklet.js");
 
 // ── Audio Processing ──
 function downsampleBuffer(
@@ -52,13 +61,53 @@ function floatTo16BitPCM(float32: Float32Array): Int16Array {
   return int16;
 }
 
+async function loadCaptureWorklet(context: AudioContext): Promise<void> {
+  await context.audioWorklet.addModule(CAPTURE_WORKLET_URL);
+}
+
+function processCapturedChunk(inputData: Float32Array, sampleRate: number): void {
+  // Check if there's actually audio (skip silence)
+  let sum = 0;
+  for (let i = 0; i < inputData.length; i++) {
+    sum += Math.abs(inputData[i]);
+  }
+  if (sum / inputData.length < 0.001) return; // Skip near-silence
+
+  // Downsample to 16kHz
+  const downsampled = downsampleBuffer(
+    inputData,
+    sampleRate,
+    TARGET_SAMPLE_RATE
+  );
+
+  // Convert to Int16 PCM
+  const pcm = floatTo16BitPCM(downsampled);
+
+  // Send to service worker
+  chrome.runtime.sendMessage({
+    type: "audio-data",
+    target: "background",
+    data: Array.from(new Uint8Array(pcm.buffer)),
+  });
+}
+
+function getPlaybackElement(): HTMLAudioElement {
+  if (!playbackElement) {
+    playbackElement = new Audio();
+    playbackElement.preload = "auto";
+  }
+  return playbackElement;
+}
+
 async function applyPlaybackSink(
-  context: AudioContext,
+  element: HTMLAudioElement,
   deviceId: string
 ): Promise<void> {
-  const sinkAware = context as SinkAwareAudioContext;
+  const sinkAware = element as SinkAwareAudioElement;
   if (typeof sinkAware.setSinkId !== "function") {
-    console.warn("[Offscreen] setSinkId is unavailable in this Chrome build");
+    console.warn(
+      "[Offscreen] HTMLMediaElement.setSinkId is unavailable in this Chrome build"
+    );
     if (!hasReportedUnsupportedSinkRouting) {
       hasReportedUnsupportedSinkRouting = true;
       chrome.runtime.sendMessage({
@@ -73,6 +122,7 @@ async function applyPlaybackSink(
 
   try {
     await sinkAware.setSinkId(deviceId);
+    console.log("[Offscreen] setSinkId succeeded for:", deviceId);
   } catch (err) {
     console.error("[Offscreen] Failed to set sink ID:", err);
     chrome.runtime.sendMessage({
@@ -87,12 +137,12 @@ async function applyPlaybackSink(
 // ── Set Output Device ──
 function setOutputDevice(deviceId: string): void {
   outputDeviceId = deviceId || null;
-  // If playback context exists, update its sink
-  if (playbackContext) {
+  // If playback element exists, update its sink
+  if (playbackElement) {
     if (deviceId) {
-      void applyPlaybackSink(playbackContext, deviceId);
+      void applyPlaybackSink(playbackElement, deviceId);
     } else {
-      const sinkAware = playbackContext as SinkAwareAudioContext;
+      const sinkAware = playbackElement as SinkAwareAudioElement;
       if (typeof sinkAware.setSinkId === "function") {
         sinkAware.setSinkId("").catch((err: Error) => {
           console.error("[Offscreen] Failed to reset sink ID:", err);
@@ -104,8 +154,15 @@ function setOutputDevice(deviceId: string): void {
 }
 
 // ── Start Capturing ──
-async function startCapture(streamId: string): Promise<void> {
+async function startCapture(
+  streamId: string,
+  initialOutputDeviceId?: string
+): Promise<void> {
   try {
+    if (typeof initialOutputDeviceId === "string") {
+      setOutputDevice(initialOutputDeviceId);
+    }
+
     // Get media stream from tab
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -119,40 +176,33 @@ async function startCapture(streamId: string): Promise<void> {
     audioContext = new AudioContext({ sampleRate: 48000 });
     sourceNode = audioContext.createMediaStreamSource(mediaStream);
 
-    // Keep original audio playing (no muting!) by routing to destination
-    sourceNode.connect(audioContext.destination);
+    // Do not passthrough original tab audio.
+    // We only capture it for STT so users don't hear untranslated + translated audio together.
 
-    // Extract PCM chunks via ScriptProcessor
-    processorNode = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+    if (!audioContext.audioWorklet) {
+      throw new Error("AudioWorklet is not available in this browser");
+    }
+    await loadCaptureWorklet(audioContext);
+
+    // Extract PCM chunks via AudioWorkletNode
+    processorNode = new AudioWorkletNode(audioContext, WORKLET_PROCESSOR_NAME, {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      channelCount: 1,
+      channelCountMode: "explicit",
+      processorOptions: { chunkSize: BUFFER_SIZE },
+    });
     sourceNode.connect(processorNode);
-    processorNode.connect(audioContext.destination);
+    processorMonitorGain = audioContext.createGain();
+    processorMonitorGain.gain.value = 0;
+    processorNode.connect(processorMonitorGain);
+    processorMonitorGain.connect(audioContext.destination);
 
-    processorNode.onaudioprocess = (e) => {
-      const inputData = e.inputBuffer.getChannelData(0);
-
-      // Check if there's actually audio (skip silence)
-      let sum = 0;
-      for (let i = 0; i < inputData.length; i++) {
-        sum += Math.abs(inputData[i]);
-      }
-      if (sum / inputData.length < 0.001) return; // Skip near-silence
-
-      // Downsample to 16kHz
-      const downsampled = downsampleBuffer(
-        inputData,
-        audioContext!.sampleRate,
-        TARGET_SAMPLE_RATE
-      );
-
-      // Convert to Int16 PCM
-      const pcm = floatTo16BitPCM(downsampled);
-
-      // Send to service worker
-      chrome.runtime.sendMessage({
-        type: "audio-data",
-        target: "background",
-        data: Array.from(new Uint8Array(pcm.buffer)),
-      });
+    processorNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
+      const inputData = event.data;
+      if (!(inputData instanceof Float32Array) || !audioContext) return;
+      processCapturedChunk(inputData, audioContext.sampleRate);
     };
 
     console.log("[Offscreen] Capture started");
@@ -168,12 +218,17 @@ async function startCapture(streamId: string): Promise<void> {
 
 // ── Stop Capturing ──
 function stopCapture(): void {
+  if (processorNode) {
+    processorNode.port.onmessage = null;
+  }
   processorNode?.disconnect();
+  processorMonitorGain?.disconnect();
   sourceNode?.disconnect();
   audioContext?.close();
   mediaStream?.getTracks().forEach((t) => t.stop());
 
   processorNode = null;
+  processorMonitorGain = null;
   sourceNode = null;
   audioContext = null;
   mediaStream = null;
@@ -181,55 +236,98 @@ function stopCapture(): void {
   console.log("[Offscreen] Capture stopped");
 }
 
-// ── Play Translated Audio (routes to selected output device) ──
-async function playTranslatedAudio(audioData: number[]): Promise<void> {
+async function playUsingAudioElement(bytes: Uint8Array): Promise<void> {
+  const element = getPlaybackElement();
+  if (outputDeviceId) {
+    await applyPlaybackSink(element, outputDeviceId);
+  }
+
+  const rawBuffer = bytes.buffer;
+  const audioBuffer = rawBuffer instanceof ArrayBuffer
+    ? rawBuffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    : new Uint8Array(bytes).buffer;
+  const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
+  const url = URL.createObjectURL(blob);
+  element.src = url;
+  element.currentTime = 0;
   try {
-    // Create or reconfigure playback context with the selected output device
+    await element.play();
+    console.log("[Offscreen] Audio element play() started");
+    await new Promise<void>((resolve, reject) => {
+      const onEnded = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error("Audio element playback failed"));
+      };
+      const cleanup = () => {
+        element.removeEventListener("ended", onEnded);
+        element.removeEventListener("error", onError);
+        URL.revokeObjectURL(url);
+      };
+      element.addEventListener("ended", onEnded, { once: true });
+      element.addEventListener("error", onError, { once: true });
+    });
+  } finally {
+    if (element.src === url) {
+      element.removeAttribute("src");
+      element.load();
+      URL.revokeObjectURL(url);
+    }
+  }
+}
+
+async function playUsingAudioContextFallback(bytes: Uint8Array): Promise<void> {
+  try {
+    // Fallback path for non-MP3 payloads.
     if (!playbackContext || playbackContext.state === "closed") {
       playbackContext = new AudioContext();
-      if (outputDeviceId) {
-        await applyPlaybackSink(playbackContext, outputDeviceId);
-      }
     }
 
-    // Resume if suspended (Chrome autoplay policy)
     if (playbackContext.state === "suspended") {
       await playbackContext.resume();
     }
 
-    const bytes = new Uint8Array(audioData);
-
-    // Try decoding as MP3/audio format from MiniMax
-    try {
-      const audioBuffer = await playbackContext.decodeAudioData(
-        bytes.buffer.slice(0)
-      );
-      const source = playbackContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(playbackContext.destination);
-      source.start();
-    } catch {
-      // If decoding fails, try as raw PCM
-      console.warn("[Offscreen] Could not decode audio, trying raw PCM");
-      const float32 = new Float32Array(bytes.length / 2);
-      const view = new DataView(bytes.buffer);
-      for (let i = 0; i < float32.length; i++) {
-        float32[i] = view.getInt16(i * 2, true) / 32768;
-      }
-      const buffer = playbackContext.createBuffer(
-        1,
-        float32.length,
-        24000
-      );
-      buffer.getChannelData(0).set(float32);
-      const source = playbackContext.createBufferSource();
-      source.buffer = buffer;
-      source.connect(playbackContext.destination);
-      source.start();
+    const float32 = new Float32Array(bytes.length / 2);
+    const view = new DataView(bytes.buffer);
+    for (let i = 0; i < float32.length; i++) {
+      float32[i] = view.getInt16(i * 2, true) / 32768;
     }
+    const buffer = playbackContext.createBuffer(1, float32.length, 24000);
+    buffer.getChannelData(0).set(float32);
+    const source = playbackContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(playbackContext.destination);
+    source.start();
   } catch (err) {
-    console.error("[Offscreen] Playback error:", err);
+    console.error("[Offscreen] Playback fallback error:", err);
   }
+}
+
+// ── Play Translated Audio (routes to selected output device) ──
+function playTranslatedAudio(audioData: number[]): void {
+  console.log(
+    "[Offscreen] Playing translated audio (%d bytes)",
+    audioData.length
+  );
+  const bytes = new Uint8Array(audioData);
+  playbackQueue = playbackQueue
+    .then(async () => {
+      try {
+        await playUsingAudioElement(bytes);
+      } catch (err) {
+        console.warn(
+          "[Offscreen] Audio element playback failed; trying PCM fallback:",
+          err
+        );
+        await playUsingAudioContextFallback(bytes);
+      }
+    })
+    .catch((err) => {
+      console.error("[Offscreen] Playback queue error:", err);
+    });
 }
 
 // ── Message Listener ──
@@ -238,13 +336,13 @@ chrome.runtime.onMessage.addListener((message) => {
 
   switch (message.type) {
     case "start-capture":
-      startCapture(message.streamId);
+      startCapture(message.streamId, message.outputDeviceId);
       break;
     case "stop-capture":
       stopCapture();
       break;
     case "translated-audio":
-      playTranslatedAudio(message.data);
+      void playTranslatedAudio(message.data);
       break;
     case "set-output-device":
       setOutputDevice(message.deviceId);

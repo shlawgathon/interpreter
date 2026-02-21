@@ -73,22 +73,67 @@ async def websocket_translate(ws: WebSocket):
 
     speechmatics: SpeechmaticsClient | None = None
     minimax = MinimaxClient(api_key=minimax_key, group_id=minimax_group_id)
+    connection_open = True
 
     # Buffer for accumulating transcript before translation
     transcript_buffer = ""
     translation_lock = asyncio.Lock()
+    translation_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    translation_worker_task: asyncio.Task | None = None
+
+    async def safe_send_json(payload: dict) -> bool:
+        nonlocal connection_open
+        if not connection_open:
+            return False
+        try:
+            await ws.send_json(payload)
+            return True
+        except (WebSocketDisconnect, RuntimeError):
+            connection_open = False
+            return False
+
+    async def safe_send_bytes(payload: bytes) -> bool:
+        nonlocal connection_open
+        if not connection_open:
+            return False
+        try:
+            await ws.send_bytes(payload)
+            return True
+        except (WebSocketDisconnect, RuntimeError):
+            connection_open = False
+            return False
+
+    async def enqueue_translation(text: str) -> None:
+        if not text.strip() or not connection_open:
+            return
+        await translation_queue.put(text.strip())
+
+    async def translation_worker() -> None:
+        while True:
+            item = await translation_queue.get()
+            try:
+                if item is None:
+                    return
+                await translate_and_speak(item)
+            finally:
+                translation_queue.task_done()
 
     async def on_transcript(text: str, is_final: bool):
         """Called when Speechmatics produces a transcript segment."""
         nonlocal transcript_buffer
 
+        if not connection_open:
+            return
+
         try:
             # Send transcript to client
-            await ws.send_json({
+            sent = await safe_send_json({
                 "type": "transcript",
                 "text": text,
                 "is_final": is_final,
             })
+            if not sent:
+                return
 
             if is_final and text.strip():
                 transcript_buffer += " " + text.strip()
@@ -98,7 +143,7 @@ async def websocket_translate(ws: WebSocket):
                     len(transcript_buffer) > 20
                     or transcript_buffer.rstrip().endswith((".", "!", "?", "。", "！", "？"))
                 ):
-                    await translate_and_speak(transcript_buffer.strip())
+                    await enqueue_translation(transcript_buffer.strip())
                     transcript_buffer = ""
         except (ConnectionError, RuntimeError) as e:
             logger.error("Error in on_transcript: %s", e)
@@ -106,25 +151,51 @@ async def websocket_translate(ws: WebSocket):
     async def translate_and_speak(text: str):
         """Translate text and send back TTS audio."""
         async with translation_lock:
+            if not connection_open or not text.strip():
+                return
             try:
                 # Step 1: Translate via MiniMax LLM
                 src_name = get_language_name(source_lang)
                 tgt_name = get_language_name(target_lang)
 
-                translated = await minimax.translate(
+                translated_chunks: list[str] = []
+                translated = ""
+                async for chunk in minimax.translate_stream(
                     text=text,
                     source_language=src_name,
                     target_language=tgt_name,
-                )
+                ):
+                    if not connection_open:
+                        return
+                    translated_chunks.append(chunk)
+                    translated = "".join(translated_chunks).strip()
+                    if translated:
+                        sent = await safe_send_json({
+                            "type": "translated_text_partial",
+                            "text": translated,
+                        })
+                        if not sent:
+                            return
+
+                # Fallback if streaming returned no text.
+                if not translated:
+                    translated = await minimax.translate(
+                        text=text,
+                        source_language=src_name,
+                        target_language=tgt_name,
+                    ) or ""
+                translated = translated.strip()
 
                 if not translated:
                     return
 
                 # Send translated text to client
-                await ws.send_json({
+                sent = await safe_send_json({
                     "type": "translated_text",
                     "text": translated,
                 })
+                if not sent:
+                    return
 
                 logger.info("[Translate] %s → %s", text, translated)
 
@@ -136,19 +207,25 @@ async def websocket_translate(ws: WebSocket):
 
                 if audio_data:
                     # Send binary audio back
-                    await ws.send_bytes(audio_data)
-                    logger.info("[TTS] Sent %d bytes of audio", len(audio_data))
+                    sent = await safe_send_bytes(audio_data)
+                    if sent:
+                        logger.info("[TTS] Sent %d bytes of audio", len(audio_data))
 
             except (httpx.HTTPStatusError, ConnectionError, ValueError) as e:
                 logger.error("Translation/TTS error: %s", e)
-                await ws.send_json({
+                await safe_send_json({
                     "type": "error",
                     "message": str(e),
                 })
 
     try:
+        translation_worker_task = asyncio.create_task(translation_worker())
+
         while True:
             data = await ws.receive()
+            if data.get("type") == "websocket.disconnect":
+                connection_open = False
+                break
 
             if "text" in data:
                 # JSON message
@@ -177,14 +254,22 @@ async def websocket_translate(ws: WebSocket):
                     await speechmatics.send_audio(data["bytes"])
 
     except WebSocketDisconnect:
+        connection_open = False
         logger.info("Client disconnected")
     except RuntimeError as e:
+        connection_open = False
         logger.error("WebSocket error: %s", e)
     finally:
-        # Flush remaining transcript buffer
-        if transcript_buffer.strip():
-            await translate_and_speak(transcript_buffer.strip())
+        connection_open = False
+
+        if translation_worker_task:
+            await translation_queue.put(None)
+            try:
+                await translation_worker_task
+            except asyncio.CancelledError:
+                pass
 
         if speechmatics:
             await speechmatics.close()
+        await minimax.close()
         logger.info("Session cleaned up")

@@ -233,6 +233,9 @@ export default function App() {
           setCurrentOriginal("");
           setCurrentTranslated("");
           break;
+        case "translated-text-partial":
+          setCurrentTranslated(message.text);
+          break;
         case "error":
           setErrorMsg(message.message);
           setStatus("error");
