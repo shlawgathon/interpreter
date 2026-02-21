@@ -60,34 +60,51 @@ export default function App() {
       }
     });
 
-    // Enumerate output devices via offscreen document (it has getUserMedia access)
+    // Load output devices from storage (offscreen document writes them there)
     loadOutputDevices();
+
+    // Watch for storage changes (offscreen updates device list)
+    const storageListener = (changes: { [key: string]: chrome.storage.StorageChange }) => {
+      if (changes.outputDevices) {
+        const devices = changes.outputDevices.newValue as AudioDevice[];
+        if (devices && Array.isArray(devices)) {
+          setOutputDevices(devices);
+        }
+      }
+    };
+    chrome.storage.local.onChanged.addListener(storageListener);
+    return () => chrome.storage.local.onChanged.removeListener(storageListener);
   }, []);
 
   const loadOutputDevices = () => {
-    chrome.runtime.sendMessage(
-      { type: "get-output-devices", target: "background" },
-      (devices: AudioDevice[] | undefined) => {
-        if (devices && Array.isArray(devices)) {
-          setOutputDevices(devices);
-          // Auto-select BlackHole if no device selected yet
-          if (!selectedDevice) {
-            const blackhole = devices.find((d) =>
-              d.label.toLowerCase().includes("blackhole")
-            );
-            if (blackhole) {
-              setSelectedDevice(blackhole.deviceId);
-              chrome.storage.sync.set({ outputDeviceId: blackhole.deviceId });
-              chrome.runtime.sendMessage({
-                type: "set-output-device",
-                target: "background",
-                deviceId: blackhole.deviceId,
-              });
-            }
+    chrome.storage.local.get("outputDevices", (data) => {
+      const devices = data.outputDevices as AudioDevice[] | undefined;
+      if (devices && Array.isArray(devices) && devices.length > 0) {
+        setOutputDevices(devices);
+        // Auto-select BlackHole if no device selected yet
+        if (!selectedDevice) {
+          const blackhole = devices.find((d) =>
+            d.label.toLowerCase().includes("blackhole")
+          );
+          if (blackhole) {
+            setSelectedDevice(blackhole.deviceId);
+            chrome.storage.sync.set({ outputDeviceId: blackhole.deviceId });
+            chrome.runtime.sendMessage({
+              type: "set-output-device",
+              target: "background",
+              deviceId: blackhole.deviceId,
+            });
           }
         }
+      } else {
+        // Devices not enumerated yet — trigger offscreen creation
+        chrome.runtime.sendMessage({ type: "refresh-devices", target: "background" });
       }
-    );
+    });
+  };
+
+  const refreshDevices = () => {
+    chrome.runtime.sendMessage({ type: "refresh-devices", target: "background" });
   };
 
   const handleDeviceChange = (deviceId: string) => {
@@ -282,7 +299,7 @@ export default function App() {
             <span className="output-device-label">🔊 Translation Output</span>
             <button
               className="refresh-devices-btn"
-              onClick={loadOutputDevices}
+              onClick={refreshDevices}
               title="Refresh devices"
             >
               ↻

@@ -228,24 +228,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       break;
 
-    case "get-output-devices":
-      // Forward to offscreen to enumerate output devices (it has getUserMedia access)
-      (async () => {
-        try {
-          await ensureOffscreenDocument();
-          // Wait for offscreen script to initialize its listeners
-          await new Promise((r) => setTimeout(r, 500));
-          const devices = await chrome.runtime.sendMessage({
-            type: "get-output-devices",
+    case "refresh-devices":
+      // Create offscreen and tell it to re-enumerate devices → chrome.storage.local
+      ensureOffscreenDocument().then(() => {
+        setTimeout(() => {
+          chrome.runtime.sendMessage({
+            type: "refresh-devices",
             target: "offscreen",
           });
-          sendResponse(devices);
-        } catch (err) {
-          console.error("[BG] Failed to get output devices:", err);
-          sendResponse([]);
-        }
-      })();
-      return true; // async
+        }, 300);
+      });
+      break;
 
     case "set-output-device":
       // Forward to offscreen to set output device
@@ -273,4 +266,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === state.tabId && state.isCapturing) {
     stopCapture();
   }
+});
+
+// ── Create offscreen at startup so devices are enumerated early ──
+ensureOffscreenDocument().catch(() => {
+  // Not critical if it fails on first load
 });

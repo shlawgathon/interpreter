@@ -11,6 +11,33 @@ let playbackContext: AudioContext | null = null;
 // The device ID for translated audio output (e.g. BlackHole)
 let outputDeviceId: string | null = null;
 
+// ── Auto-enumerate devices on load and store in chrome.storage.local ──
+async function enumerateAndStoreDevices(): Promise<void> {
+  try {
+    // Request mic permission so Chrome reveals full device labels
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+    } catch {
+      console.warn("[Offscreen] getUserMedia denied — device labels may be empty");
+    }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const outputs = devices
+      .filter((d) => d.kind === "audiooutput" && d.deviceId !== "default")
+      .map((d) => ({
+        deviceId: d.deviceId,
+        label: d.label || `Output ${d.deviceId.slice(0, 8)}`,
+      }));
+    console.log("[Offscreen] Found output devices:", outputs);
+    await chrome.storage.local.set({ outputDevices: outputs });
+  } catch (err) {
+    console.error("[Offscreen] Device enumeration failed:", err);
+  }
+}
+
+// Run on load
+enumerateAndStoreDevices();
+
 // Target: 16kHz mono Int16 PCM for Speechmatics
 const TARGET_SAMPLE_RATE = 16000;
 const BUFFER_SIZE = 4096;
@@ -155,6 +182,11 @@ async function playTranslatedAudio(audioData: number[]): Promise<void> {
       playbackContext = new AudioContext(options);
     }
 
+    // Resume if suspended (Chrome autoplay policy)
+    if (playbackContext.state === "suspended") {
+      await playbackContext.resume();
+    }
+
     const bytes = new Uint8Array(audioData);
 
     // Try decoding as MP3/audio format from MiniMax
@@ -207,28 +239,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case "set-output-device":
       setOutputDevice(message.deviceId);
       break;
-    case "get-output-devices":
-      (async () => {
-        try {
-          // Request mic permission so Chrome reveals full device labels
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            stream.getTracks().forEach((t) => t.stop());
-          } catch {
-            // Permission denied — labels may be empty
-          }
-          const devices = await getOutputDevices();
-          sendResponse(
-            devices.map((d) => ({
-              deviceId: d.deviceId,
-              label: d.label || `Output ${d.deviceId.slice(0, 8)}`,
-            }))
-          );
-        } catch (err) {
-          console.error("[Offscreen] Device enumeration failed:", err);
-          sendResponse([]);
-        }
-      })();
-      return true; // async response
+    case "refresh-devices":
+      enumerateAndStoreDevices();
+      break;
   }
 });
