@@ -208,14 +208,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       setOutputDevice(message.deviceId);
       break;
     case "get-output-devices":
-      getOutputDevices().then((devices) => {
-        sendResponse(
-          devices.map((d) => ({
-            deviceId: d.deviceId,
-            label: d.label || `Output ${d.deviceId.slice(0, 8)}`,
-          }))
-        );
-      });
+      (async () => {
+        try {
+          // Request mic permission so Chrome reveals full device labels
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream.getTracks().forEach((t) => t.stop());
+          } catch {
+            // Permission denied — labels may be empty
+          }
+          const devices = await getOutputDevices();
+          sendResponse(
+            devices.map((d) => ({
+              deviceId: d.deviceId,
+              label: d.label || `Output ${d.deviceId.slice(0, 8)}`,
+            }))
+          );
+        } catch (err) {
+          console.error("[Offscreen] Device enumeration failed:", err);
+          sendResponse([]);
+        }
+      })();
       return true; // async response
   }
 });
