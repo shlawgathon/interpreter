@@ -1,4 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+
+function formatDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
 import { LANGUAGES } from "../utils/languages";
 
 interface TranscriptEntry {
@@ -79,8 +88,27 @@ export default function App() {
   const [ttsProvider, setTtsProvider] = useState<TTSProvider>("speechmatics");
   const [backendUrl, setBackendUrl] = useState("ws://localhost:8000");
 
+  const [elapsed, setElapsed] = useState(0);
+  const captureStartedAtRef = useRef<number | null>(null);
+
   const transcriptRef = useRef<HTMLDivElement>(null);
   const currentOriginalRef = useRef("");
+
+  // Duration timer — driven by background's captureStartedAt
+  useEffect(() => {
+    if (!isCapturing || !captureStartedAtRef.current) {
+      setElapsed(0);
+      return;
+    }
+    // compute immediately so we don't wait 1s on popup reopen
+    setElapsed(Math.floor((Date.now() - captureStartedAtRef.current) / 1000));
+    const id = setInterval(() => {
+      if (captureStartedAtRef.current) {
+        setElapsed(Math.floor((Date.now() - captureStartedAtRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isCapturing]);
 
   useEffect(() => {
     currentOriginalRef.current = currentOriginal;
@@ -121,6 +149,9 @@ export default function App() {
     // Get current state from background
     chrome.runtime.sendMessage({ type: "get-state", target: "background" }, (res) => {
       if (res) {
+        if (res.captureStartedAt) {
+          captureStartedAtRef.current = res.captureStartedAt;
+        }
         setIsCapturing(res.isCapturing);
         setStatus(res.isCapturing ? "capturing" : "idle");
         if (res.ttsProvider === "speechmatics" || res.ttsProvider === "minimax") {
@@ -202,6 +233,7 @@ export default function App() {
       });
     } else {
       setErrorMsg("");
+      captureStartedAtRef.current = Date.now();
       setIsCapturing(true);
       setStatus("capturing");
       // Force system-default routing mode before starting.
@@ -261,6 +293,9 @@ export default function App() {
           <div className="header-title">Interpreter</div>
           <div className="header-subtitle">Live Translation</div>
         </div>
+        {isCapturing && (
+          <span className="header-timer">{formatDuration(elapsed)}</span>
+        )}
       </div>
 
       {/* Status Bar */}

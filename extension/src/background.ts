@@ -5,6 +5,7 @@ const BACKEND_WS_URL = "ws://localhost:8000/ws/translate";
 
 interface TranslationState {
   isCapturing: boolean;
+  captureStartedAt: number | null;
   tabId: number | null;
   backendSocket: WebSocket | null;
   sourceLang: string;
@@ -15,6 +16,7 @@ interface TranslationState {
 
 const state: TranslationState = {
   isCapturing: false,
+  captureStartedAt: null,
   tabId: null,
   backendSocket: null,
   sourceLang: "en",
@@ -214,6 +216,7 @@ async function startCapture(
   });
 
   state.isCapturing = true;
+  state.captureStartedAt = Date.now();
   broadcastToPopup({ type: "status", status: "capturing" });
 }
 
@@ -228,6 +231,7 @@ async function stopCapture(): Promise<void> {
   await removeOffscreenDocument();
 
   state.isCapturing = false;
+  state.captureStartedAt = null;
   state.tabId = null;
   broadcastToPopup({ type: "status", status: "idle" });
 }
@@ -286,6 +290,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case "get-state":
       sendResponse({
         isCapturing: state.isCapturing,
+        captureStartedAt: state.captureStartedAt,
         sourceLang: state.sourceLang,
         targetLang: state.targetLang,
         ttsProvider: state.ttsProvider,

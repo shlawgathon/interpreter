@@ -74,6 +74,21 @@ body {
   letter-spacing: 1px;
 }
 
+.header-timer {
+  margin-left: auto;
+  font-size: 22px;
+  font-weight: 700;
+  font-family: "Inter", monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  letter-spacing: 1px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 12px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
 /* ── Status Bar ── */
 .status-bar {
   display: flex;

@@ -4,26 +4,20 @@ A Chrome extension + FastAPI backend that translates live audio from web chat ap
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────────────────────────────┐
-│  Chrome Extension (MV3)                                            │
-│                                                                    │
-│  Tab Audio ──→ Offscreen Doc ──→ Service Worker ──→ WebSocket ─┐   │
-│   (tabCapture)   (PCM extract)    (orchestrator)               │   │
-│                                                                │   │
-│                                                                ▼   │
-│                                                     FastAPI Backend │
-│                                                       │            │
-│                                              Speechmatics STT + RT Translation │
-│                                                       │            │
-│                                TTS Provider (MiniMax 2.8 or Speechmatics preview) │
-│                                                       │            │
-│  Offscreen Doc ◀── Service Worker ◀── Translated Audio ◀──────┘   │
-│   (playback via selected output device)                            │
-│       │                                                            │
-│       ▼                                                            │
-│  BlackHole / Speakers                                              │
-└────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph ext ["Chrome Extension (MV3)"]
+        A["Tab Audio\n(tabCapture)"] --> B["Offscreen Doc\n(PCM extract)"]
+        B --> C["Service Worker\n(orchestrator)"]
+        G["Translated Audio"] --> C
+        C --> H["Offscreen Playback\n(selected output device)"]
+        H --> I["BlackHole / Speakers"]
+    end
+
+    C -- WebSocket --> D["FastAPI Backend"]
+    D --> E["Speechmatics STT\n+ RT Translation"]
+    E --> F["TTS Provider\n(MiniMax / Speechmatics)"]
+    F --> G
 ```
 
 **Audio routing flow:**
@@ -69,6 +63,7 @@ Then load in Chrome:
 6. Hear translated audio live 🎧
 
 Notes:
+
 - Original tab audio passthrough is disabled in offscreen capture, so you should not hear untranslated + translated from the extension at the same time.
 - If output is set to BlackHole 2ch, local speakers are silent by design unless you monitor with a Multi-Output device.
 
@@ -128,6 +123,7 @@ TTS_PROVIDER=speechmatics
 ```
 
 Guidance:
+
 - Keep `USE_SPEECHMATICS_TRANSLATION=1` for the lowest end-to-end delay.
 - `TTS_PROVIDER=speechmatics` is now the default.
 - Switch to `TTS_PROVIDER=minimax` for broader multilingual voice coverage.
