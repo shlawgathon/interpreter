@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Interpreter — Live Translation",
+  "description": "Real-time speaker translation for web chat apps. Hear everything in your native tongue.",
+  "version": "1.0.0",
+  "icons": {
+    "16": "public/icon16.png",
+    "48": "public/icon48.png",
+    "128": "public/icon128.png"
+  },
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "Interpreter"
+  },
+  "background": {
+    "service_worker": "src/background.ts",
+    "type": "module"
+  },
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
