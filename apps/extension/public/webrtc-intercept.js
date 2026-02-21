@@ -7,12 +7,13 @@
   window.__interpreterWebRTCPatched = true;
 
   const SAMPLE_RATE = 16000;
-  const trackedStreams = new Set();
+  const trackedTracks = new Set();
   let capturing = false;
   let audioCtx = null;
   let merger = null;
   let processor = null;
   const sources = new Map();
+  const peerConnections = [];
 
   function ensureAudioPipeline() {
     if (audioCtx) return;
@@ -39,40 +40,63 @@
     processor.connect(audioCtx.destination);
   }
 
-  function addRemoteTrack(track, stream) {
-    const streamId = stream.id;
-    if (track.kind !== "audio" || trackedStreams.has(streamId)) return;
-    trackedStreams.add(streamId);
+  function addAudioTrack(track) {
+    const trackId = track.id;
+    if (track.kind !== "audio" || trackedTracks.has(trackId)) return;
+    trackedTracks.add(trackId);
 
     ensureAudioPipeline();
 
     const mediaStream = new MediaStream([track]);
     const source = audioCtx.createMediaStreamSource(mediaStream);
     source.connect(merger);
-    sources.set(streamId, source);
+    sources.set(trackId, source);
 
-    console.log("[interpreter] intercepted remote audio track:", streamId);
+    console.log("[interpreter] intercepted remote audio track:", trackId);
 
     track.addEventListener("ended", () => {
-      const src = sources.get(streamId);
+      const src = sources.get(trackId);
       if (src) {
         src.disconnect();
-        sources.delete(streamId);
+        sources.delete(trackId);
       }
-      trackedStreams.delete(streamId);
-      console.log("[interpreter] remote audio track ended:", streamId);
+      trackedTracks.delete(trackId);
     });
+  }
+
+  function scanExistingConnections() {
+    for (const pc of peerConnections) {
+      try {
+        const receivers = pc.getReceivers();
+        for (const receiver of receivers) {
+          if (receiver.track && receiver.track.kind === "audio") {
+            addAudioTrack(receiver.track);
+          }
+        }
+      } catch (e) {}
+    }
+  }
+
+  function scanAudioElements() {
+    const elements = document.querySelectorAll("audio, video");
+    for (const el of elements) {
+      if (el.srcObject instanceof MediaStream) {
+        const audioTracks = el.srcObject.getAudioTracks();
+        for (const track of audioTracks) {
+          addAudioTrack(track);
+        }
+      }
+    }
   }
 
   const OrigRTC = window.RTCPeerConnection;
   window.RTCPeerConnection = function (...args) {
     const pc = new OrigRTC(...args);
+    peerConnections.push(pc);
 
     pc.addEventListener("track", (event) => {
       if (event.track.kind === "audio") {
-        for (const stream of event.streams) {
-          addRemoteTrack(event.track, stream);
-        }
+        addAudioTrack(event.track);
       }
     });
 
@@ -85,11 +109,25 @@
     if (e.data?.type === "__interpreter_start_capture") {
       capturing = true;
       if (audioCtx?.state === "suspended") audioCtx.resume();
-      console.log("[interpreter] audio capture enabled");
+      scanExistingConnections();
+      scanAudioElements();
+      console.log(
+        "[interpreter] capture enabled, tracked tracks:",
+        trackedTracks.size,
+        "peer connections:",
+        peerConnections.length
+      );
     }
     if (e.data?.type === "__interpreter_stop_capture") {
       capturing = false;
-      console.log("[interpreter] audio capture disabled");
     }
+  });
+
+  const observer = new MutationObserver(() => {
+    if (capturing) scanAudioElements();
+  });
+  observer.observe(document.body || document.documentElement, {
+    childList: true,
+    subtree: true,
   });
 })();

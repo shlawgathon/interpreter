@@ -4,6 +4,7 @@ import { Overlay } from "../../components/Overlay";
 
 export default defineContentScript({
   matches: ["https://meet.google.com/*"],
+  runAt: "document_start",
   cssInjectionMode: "ui",
 
   async main(ctx) {
@@ -13,6 +14,10 @@ export default defineContentScript({
     script.src = browser.runtime.getURL("/webrtc-intercept.js");
     (document.head || document.documentElement).appendChild(script);
     script.onload = () => script.remove();
+
+    if (document.readyState === "loading") {
+      await new Promise((r) => document.addEventListener("DOMContentLoaded", r));
+    }
 
     const ui = await createShadowRootUi(ctx, {
       name: "interpreter-overlay",
