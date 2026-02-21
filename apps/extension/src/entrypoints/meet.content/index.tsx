@@ -9,6 +9,11 @@ export default defineContentScript({
   async main(ctx) {
     console.log("[interpreter] content script loaded on Meet");
 
+    const script = document.createElement("script");
+    script.src = browser.runtime.getURL("/webrtc-intercept.js");
+    (document.head || document.documentElement).appendChild(script);
+    script.onload = () => script.remove();
+
     const ui = await createShadowRootUi(ctx, {
       name: "interpreter-overlay",
       position: "overlay",
