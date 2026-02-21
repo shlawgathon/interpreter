@@ -166,8 +166,22 @@ async function startCapture(
   await ensureOffscreenDocument();
 
   // Get stream ID for tab capture
-  const streamId = await chrome.tabCapture.getMediaStreamId({
-    targetTabId: tab.id,
+  const streamId = await new Promise<string>((resolve, reject) => {
+    chrome.tabCapture.getMediaStreamId(
+      { targetTabId: tab.id },
+      (id?: string) => {
+        const err = chrome.runtime.lastError;
+        if (err) {
+          reject(new Error(err.message));
+          return;
+        }
+        if (!id) {
+          reject(new Error("Failed to get tab capture stream ID"));
+          return;
+        }
+        resolve(id);
+      }
+    );
   });
 
   // Tell offscreen to start capturing
@@ -228,15 +242,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       break;
 
-    case "refresh-devices":
-      // Create offscreen and tell it to re-enumerate devices → chrome.storage.local
-      ensureOffscreenDocument().then(() => {
-        setTimeout(() => {
-          chrome.runtime.sendMessage({
-            type: "refresh-devices",
-            target: "offscreen",
-          });
-        }, 300);
+    case "error":
+      broadcastToPopup({
+        type: "error",
+        message: message.message || "An unknown extension error occurred",
       });
       break;
 
@@ -266,9 +275,4 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === state.tabId && state.isCapturing) {
     stopCapture();
   }
-});
-
-// ── Create offscreen at startup so devices are enumerated early ──
-ensureOffscreenDocument().catch(() => {
-  // Not critical if it fails on first load
 });
