@@ -9,6 +9,7 @@ interface TranslationState {
   backendSocket: WebSocket | null;
   sourceLang: string;
   targetLang: string;
+  outputDeviceId: string | null;
 }
 
 const state: TranslationState = {
@@ -17,6 +18,7 @@ const state: TranslationState = {
   backendSocket: null,
   sourceLang: "en",
   targetLang: "es",
+  outputDeviceId: null,
 };
 
 // ── Message Types ──
@@ -26,9 +28,11 @@ type Message =
   | { type: "audio-data"; data: number[] }
   | { type: "translated-audio"; data: number[] }
   | { type: "transcript"; text: string; isFinal: boolean }
+  | { type: "translated-text-partial"; text: string }
   | { type: "translated-text"; text: string }
   | { type: "status"; status: string }
   | { type: "error"; message: string }
+  | { type: "set-output-device"; deviceId: string }
   | { type: "get-state" };
 
 // ── Offscreen Document Management ──
@@ -98,6 +102,11 @@ function connectToBackend(): void {
             text: msg.text,
             isFinal: msg.is_final,
           });
+        } else if (msg.type === "translated_text_partial") {
+          broadcastToPopup({
+            type: "translated-text-partial",
+            text: msg.text,
+          });
         } else if (msg.type === "translated_text") {
           broadcastToPopup({
             type: "translated-text",
@@ -166,8 +175,22 @@ async function startCapture(
   await ensureOffscreenDocument();
 
   // Get stream ID for tab capture
-  const streamId = await chrome.tabCapture.getMediaStreamId({
-    targetTabId: tab.id,
+  const streamId = await new Promise<string>((resolve, reject) => {
+    chrome.tabCapture.getMediaStreamId(
+      { targetTabId: tab.id },
+      (id?: string) => {
+        const err = chrome.runtime.lastError;
+        if (err) {
+          reject(new Error(err.message));
+          return;
+        }
+        if (!id) {
+          reject(new Error("Failed to get tab capture stream ID"));
+          return;
+        }
+        resolve(id);
+      }
+    );
   });
 
   // Tell offscreen to start capturing
@@ -175,6 +198,7 @@ async function startCapture(
     type: "start-capture",
     target: "offscreen",
     streamId,
+    outputDeviceId: state.outputDeviceId,
   });
 
   state.isCapturing = true;
@@ -228,11 +252,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       break;
 
+    case "error":
+      broadcastToPopup({
+        type: "error",
+        message: message.message || "An unknown extension error occurred",
+      });
+      break;
+
+    case "set-output-device":
+      state.outputDeviceId = message.deviceId || null;
+      // Forward to offscreen to set output device
+      ensureOffscreenDocument().then(() => {
+        chrome.runtime.sendMessage({
+          type: "set-output-device",
+          target: "offscreen",
+          deviceId: message.deviceId,
+        });
+      });
+      break;
+
     case "get-state":
       sendResponse({
         isCapturing: state.isCapturing,
         sourceLang: state.sourceLang,
         targetLang: state.targetLang,
+        outputDeviceId: state.outputDeviceId,
       });
       return false;
   }
