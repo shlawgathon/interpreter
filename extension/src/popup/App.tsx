@@ -46,8 +46,9 @@ function IconStop({ className = "icon icon-sm" }: { className?: string }) {
 function IconSettings({ className = "icon icon-sm" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 9.2A2.8 2.8 0 1012 14.8 2.8 2.8 0 0012 9.2z" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M19.2 14.2l1.4-2.2-1.4-2.2-2.6.2a6.2 6.2 0 00-1.5-1.5l.2-2.6-2.2-1.4-2.2 1.4-.2 2.6a6.2 6.2 0 00-1.5 1.5l-2.6-.2-1.4 2.2 1.4 2.2 2.6-.2a6.2 6.2 0 001.5 1.5l-.2 2.6 2.2 1.4 2.2-1.4.2-2.6a6.2 6.2 0 001.5-1.5l2.6.2z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="12" cy="12" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M12 3.8V6M12 18V20.2M3.8 12H6M18 12h2.2M6.3 6.3l1.6 1.6M16.1 16.1l1.6 1.6M6.3 17.7l1.6-1.6M16.1 7.9l1.6-1.6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }
