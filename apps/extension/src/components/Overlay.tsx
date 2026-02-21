@@ -93,24 +93,29 @@ export function Overlay() {
   const handleJoin = async () => {
     if (!sessionCode.trim()) return;
 
-    const capture = createAudioCapture();
-    captureRef.current = capture;
-    await capture.start();
+    try {
+      const capture = createAudioCapture();
+      captureRef.current = capture;
+      await capture.start();
 
-    wsRef.current?.sendJson({
-      type: "join",
-      sessionCode,
-      participantName: "Me",
-      spokenLanguage: spokenLang,
-      listenLanguage: listenLang,
-    });
+      wsRef.current?.sendJson({
+        type: "join",
+        sessionCode,
+        participantName: "Me",
+        spokenLanguage: spokenLang,
+        listenLanguage: listenLang,
+      });
 
-    capture.onChunk = (pcm) => {
-      const pid = participantIdRef.current;
-      if (pid) {
-        wsRef.current?.sendAudio(pid, pcm);
-      }
-    };
+      capture.onChunk = (pcm) => {
+        const pid = participantIdRef.current;
+        if (pid) {
+          wsRef.current?.sendAudio(pid, pcm);
+        }
+      };
+    } catch (err) {
+      console.error("[interpreter] tab capture failed:", err);
+      setError("Failed to capture tab audio. Make sure you're on a Google Meet call.");
+    }
   };
 
   const handleLeave = () => {

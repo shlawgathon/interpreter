@@ -1,6 +1,6 @@
 /**
- * Captures the user's microphone as 16-bit PCM at 16kHz using AudioWorklet.
- * Falls back to ScriptProcessorNode if AudioWorklet is unavailable.
+ * Captures the Google Meet tab's audio output (remote participants)
+ * as 16-bit PCM at 16kHz using chrome.tabCapture via the background script.
  */
 
 const SAMPLE_RATE = 16000;
@@ -22,14 +22,26 @@ export function createAudioCapture(): AudioCaptureHandle {
     onChunk: null,
 
     async start() {
+      const response = await browser.runtime.sendMessage({
+        type: "requestTabCapture",
+      });
+
+      if (response?.error) {
+        throw new Error(`Tab capture failed: ${response.error}`);
+      }
+
+      const { streamId } = response;
+      if (!streamId) {
+        throw new Error("No stream ID returned from tab capture");
+      }
+
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: SAMPLE_RATE,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+          mandatory: {
+            chromeMediaSource: "tab",
+            chromeMediaSourceId: streamId,
+          },
+        } as any,
       });
 
       audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
@@ -48,10 +60,10 @@ export function createAudioCapture(): AudioCaptureHandle {
 
         source.connect(workletNode);
         workletNode.connect(audioCtx.destination);
-        console.log("[audio] capture started (AudioWorklet)");
+        console.log("[audio] tab capture started (AudioWorklet)");
       } catch (err) {
         console.warn("[audio] AudioWorklet unavailable, using ScriptProcessor fallback:", err);
-        const bufferSize = Math.round((SAMPLE_RATE * 0.2));
+        const bufferSize = Math.round(SAMPLE_RATE * 0.2);
         fallbackProcessor = audioCtx.createScriptProcessor(
           nextPow2(bufferSize), 1, 1,
         );
@@ -62,7 +74,7 @@ export function createAudioCapture(): AudioCaptureHandle {
         };
         source.connect(fallbackProcessor);
         fallbackProcessor.connect(audioCtx.destination);
-        console.log("[audio] capture started (ScriptProcessor fallback)");
+        console.log("[audio] tab capture started (ScriptProcessor fallback)");
       }
     },
 
