@@ -7,6 +7,11 @@ interface TranscriptEntry {
   timestamp: number;
 }
 
+interface AudioDevice {
+  deviceId: string;
+  label: string;
+}
+
 type ExtStatus = "idle" | "connected" | "capturing" | "disconnected" | "error";
 
 export default function App() {
@@ -20,6 +25,10 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
+  // Output device
+  const [outputDevices, setOutputDevices] = useState<AudioDevice[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState("");
+
   // Settings
   const [speechmaticsKey, setSpeechmaticsKey] = useState("");
   const [minimaxKey, setMinimaxKey] = useState("");
@@ -31,7 +40,7 @@ export default function App() {
   // Load saved settings
   useEffect(() => {
     chrome.storage.sync.get(
-      ["sourceLang", "targetLang", "speechmaticsKey", "minimaxKey", "minimaxGroupId", "backendUrl"],
+      ["sourceLang", "targetLang", "speechmaticsKey", "minimaxKey", "minimaxGroupId", "backendUrl", "outputDeviceId"],
       (data) => {
         if (data.sourceLang) setSourceLang(data.sourceLang);
         if (data.targetLang) setTargetLang(data.targetLang);
@@ -39,6 +48,7 @@ export default function App() {
         if (data.minimaxKey) setMinimaxKey(data.minimaxKey);
         if (data.minimaxGroupId) setMinimaxGroupId(data.minimaxGroupId);
         if (data.backendUrl) setBackendUrl(data.backendUrl);
+        if (data.outputDeviceId) setSelectedDevice(data.outputDeviceId);
       }
     );
 
@@ -49,7 +59,46 @@ export default function App() {
         setStatus(res.isCapturing ? "capturing" : "idle");
       }
     });
+
+    // Enumerate output devices
+    loadOutputDevices();
   }, []);
+
+  const loadOutputDevices = () => {
+    chrome.runtime.sendMessage(
+      { type: "get-output-devices", target: "background" },
+      (devices: AudioDevice[] | undefined) => {
+        if (devices && Array.isArray(devices)) {
+          setOutputDevices(devices);
+          // Auto-select BlackHole if no device selected yet
+          if (!selectedDevice) {
+            const blackhole = devices.find((d) =>
+              d.label.toLowerCase().includes("blackhole")
+            );
+            if (blackhole) {
+              setSelectedDevice(blackhole.deviceId);
+              chrome.storage.sync.set({ outputDeviceId: blackhole.deviceId });
+              chrome.runtime.sendMessage({
+                type: "set-output-device",
+                target: "background",
+                deviceId: blackhole.deviceId,
+              });
+            }
+          }
+        }
+      }
+    );
+  };
+
+  const handleDeviceChange = (deviceId: string) => {
+    setSelectedDevice(deviceId);
+    chrome.storage.sync.set({ outputDeviceId: deviceId });
+    chrome.runtime.sendMessage({
+      type: "set-output-device",
+      target: "background",
+      deviceId,
+    });
+  };
 
   // Listen for messages from background
   useEffect(() => {
@@ -114,6 +163,14 @@ export default function App() {
       });
     } else {
       setErrorMsg("");
+      // Ensure output device is set before starting
+      if (selectedDevice) {
+        chrome.runtime.sendMessage({
+          type: "set-output-device",
+          target: "background",
+          deviceId: selectedDevice,
+        });
+      }
       chrome.runtime.sendMessage({
         type: "start-capture",
         target: "background",
@@ -121,7 +178,7 @@ export default function App() {
         targetLang,
       });
     }
-  }, [isCapturing, sourceLang, targetLang]);
+  }, [isCapturing, sourceLang, targetLang, selectedDevice]);
 
   // Swap languages
   const handleSwap = () => {
@@ -139,6 +196,7 @@ export default function App() {
       minimaxKey,
       minimaxGroupId,
       backendUrl,
+      outputDeviceId: selectedDevice,
     });
     setShowSettings(false);
   };
@@ -152,6 +210,11 @@ export default function App() {
       case "error": return errorMsg || "Error";
       default: return "Ready";
     }
+  };
+
+  const getSelectedDeviceLabel = (): string => {
+    const device = outputDevices.find((d) => d.deviceId === selectedDevice);
+    return device?.label || "Default";
   };
 
   return (
@@ -211,6 +274,43 @@ export default function App() {
               ))}
             </select>
           </div>
+        </div>
+
+        {/* Audio Output Device */}
+        <div className="output-device-section">
+          <div className="output-device-header">
+            <span className="output-device-label">🔊 Translation Output</span>
+            <button
+              className="refresh-devices-btn"
+              onClick={loadOutputDevices}
+              title="Refresh devices"
+            >
+              ↻
+            </button>
+          </div>
+          <select
+            className="output-device-select"
+            value={selectedDevice}
+            onChange={(e) => handleDeviceChange(e.target.value)}
+            disabled={isCapturing}
+          >
+            <option value="">System Default</option>
+            {outputDevices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+          {selectedDevice && getSelectedDeviceLabel().toLowerCase().includes("blackhole") && (
+            <div className="device-hint">
+              ✓ BlackHole selected — set Meet mic to BlackHole too
+            </div>
+          )}
+          {!selectedDevice && (
+            <div className="device-hint warning">
+              ⚠ Select BlackHole to route audio into Meet
+            </div>
+          )}
         </div>
 
         {/* Start/Stop Button */}

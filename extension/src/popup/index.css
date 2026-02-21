@@ -196,6 +196,84 @@ body {
   border-color: var(--border-active);
 }
 
+/* ── Output Device Selector ── */
+.output-device-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.output-device-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.output-device-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.refresh-devices-btn {
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.refresh-devices-btn:hover {
+  color: var(--accent);
+  border-color: var(--border-active);
+}
+
+.output-device-select {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: "Inter", sans-serif;
+  cursor: pointer;
+  transition:
+    border-color 0.2s,
+    background 0.2s;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238b8b9e' viewBox='0 0 16 16'%3E%3Cpath d='M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+
+.output-device-select:focus {
+  outline: none;
+  border-color: var(--border-active);
+  background: var(--bg-card-hover);
+}
+
+.device-hint {
+  font-size: 10px;
+  color: var(--success);
+  padding: 4px 0;
+}
+
+.device-hint.warning {
+  color: var(--warning);
+}
+
 /* ── Start / Stop Button ── */
 .action-btn {
   width: 100%;

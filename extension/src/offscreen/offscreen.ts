@@ -1,12 +1,15 @@
 // ── Offscreen Document ──
 // Captures tab audio via tabCapture, extracts PCM chunks,
-// plays translated audio back.
+// plays translated audio back through a selectable output device (e.g. BlackHole).
 
 let mediaStream: MediaStream | null = null;
 let audioContext: AudioContext | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
 let processorNode: ScriptProcessorNode | null = null;
 let playbackContext: AudioContext | null = null;
+
+// The device ID for translated audio output (e.g. BlackHole)
+let outputDeviceId: string | null = null;
 
 // Target: 16kHz mono Int16 PCM for Speechmatics
 const TARGET_SAMPLE_RATE = 16000;
@@ -42,6 +45,24 @@ function floatTo16BitPCM(float32: Float32Array): Int16Array {
     int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
   return int16;
+}
+
+// ── Enumerate Output Devices ──
+async function getOutputDevices(): Promise<MediaDeviceInfo[]> {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === "audiooutput");
+}
+
+// ── Set Output Device ──
+function setOutputDevice(deviceId: string): void {
+  outputDeviceId = deviceId;
+  // If playback context exists, update its sink
+  if (playbackContext) {
+    (playbackContext as any).setSinkId(deviceId).catch((err: Error) => {
+      console.error("[Offscreen] Failed to set sink ID:", err);
+    });
+  }
+  console.log("[Offscreen] Output device set to:", deviceId);
 }
 
 // ── Start Capturing ──
@@ -122,11 +143,16 @@ function stopCapture(): void {
   console.log("[Offscreen] Capture stopped");
 }
 
-// ── Play Translated Audio ──
+// ── Play Translated Audio (routes to selected output device) ──
 async function playTranslatedAudio(audioData: number[]): Promise<void> {
   try {
-    if (!playbackContext) {
-      playbackContext = new AudioContext();
+    // Create or reconfigure playback context with the selected output device
+    if (!playbackContext || playbackContext.state === "closed") {
+      const options: AudioContextOptions = {};
+      if (outputDeviceId) {
+        (options as any).sinkId = outputDeviceId;
+      }
+      playbackContext = new AudioContext(options);
     }
 
     const bytes = new Uint8Array(audioData);
@@ -165,7 +191,7 @@ async function playTranslatedAudio(audioData: number[]): Promise<void> {
 }
 
 // ── Message Listener ──
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.target !== "offscreen") return;
 
   switch (message.type) {
@@ -178,5 +204,18 @@ chrome.runtime.onMessage.addListener((message) => {
     case "translated-audio":
       playTranslatedAudio(message.data);
       break;
+    case "set-output-device":
+      setOutputDevice(message.deviceId);
+      break;
+    case "get-output-devices":
+      getOutputDevices().then((devices) => {
+        sendResponse(
+          devices.map((d) => ({
+            deviceId: d.deviceId,
+            label: d.label || `Output ${d.deviceId.slice(0, 8)}`,
+          }))
+        );
+      });
+      return true; // async response
   }
 });
