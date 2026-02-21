@@ -10,6 +10,56 @@ interface TranscriptEntry {
 type ExtStatus = "idle" | "connected" | "capturing" | "disconnected" | "error";
 type TTSProvider = "minimax" | "speechmatics";
 
+function IconGlobe({ className = "icon" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M3 12h18M12 3c2.8 2.5 4.2 5.5 4.2 9s-1.4 6.5-4.2 9M12 3C9.2 5.5 7.8 8.5 7.8 12s1.4 6.5 4.2 9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconVolume({ className = "icon icon-sm" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 9v6h4l5 4V5L9 9H5zM17 9a4 4 0 010 6M19 7a7 7 0 010 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconPlay({ className = "icon icon-sm" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 6l10 6-10 6V6z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function IconStop({ className = "icon icon-sm" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="7" y="7" width="10" height="10" fill="currentColor" />
+    </svg>
+  );
+}
+
+function IconSettings({ className = "icon icon-sm" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 9.2A2.8 2.8 0 1012 14.8 2.8 2.8 0 0012 9.2z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M19.2 14.2l1.4-2.2-1.4-2.2-2.6.2a6.2 6.2 0 00-1.5-1.5l.2-2.6-2.2-1.4-2.2 1.4-.2 2.6a6.2 6.2 0 00-1.5 1.5l-2.6-.2-1.4 2.2 1.4 2.2 2.6-.2a6.2 6.2 0 001.5 1.5l-.2 2.6 2.2 1.4 2.2-1.4.2-2.6a6.2 6.2 0 001.5-1.5l2.6.2z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconSwap({ className = "icon icon-sm" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 7h11M16 4l3 3-3 3M16 17H5M8 14l-3 3 3 3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export default function App() {
   const [sourceLang, setSourceLang] = useState("en");
   const [targetLang, setTargetLang] = useState("es");
@@ -29,6 +79,11 @@ export default function App() {
   const [backendUrl, setBackendUrl] = useState("ws://localhost:8000");
 
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const currentOriginalRef = useRef("");
+
+  useEffect(() => {
+    currentOriginalRef.current = currentOriginal;
+  }, [currentOriginal]);
 
   // Load saved settings
   useEffect(() => {
@@ -83,8 +138,10 @@ export default function App() {
       switch (message.type) {
         case "status":
           setStatus(message.status);
-          if (message.status === "idle") setIsCapturing(false);
           if (message.status === "capturing") setIsCapturing(true);
+          if (message.status === "idle" || message.status === "disconnected" || message.status === "error") {
+            setIsCapturing(false);
+          }
           break;
         case "transcript":
           if (message.isFinal) {
@@ -102,7 +159,7 @@ export default function App() {
           setTranscripts((prev) => [
             ...prev,
             {
-              original: currentOriginal,
+              original: currentOriginalRef.current,
               translated: message.text,
               timestamp: Date.now(),
             },
@@ -116,6 +173,7 @@ export default function App() {
         case "error":
           setErrorMsg(message.message);
           setStatus("error");
+          setIsCapturing(false);
           setTimeout(() => setErrorMsg(""), 5000);
           break;
       }
@@ -123,7 +181,7 @@ export default function App() {
 
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [currentOriginal]);
+  }, []);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -135,12 +193,16 @@ export default function App() {
   // Start / Stop
   const handleToggle = useCallback(async () => {
     if (isCapturing) {
+      setIsCapturing(false);
+      setStatus("idle");
       chrome.runtime.sendMessage({
         type: "stop-capture",
         target: "background",
       });
     } else {
       setErrorMsg("");
+      setIsCapturing(true);
+      setStatus("capturing");
       // Force system-default routing mode before starting.
       chrome.runtime.sendMessage({
         type: "set-output-device",
@@ -193,7 +255,7 @@ export default function App() {
     <div className="app">
       {/* Header */}
       <div className="header">
-        <span className="header-icon">🌐</span>
+        <span className="header-icon"><IconGlobe /></span>
         <div>
           <div className="header-title">Interpreter</div>
           <div className="header-subtitle">Live Translation</div>
@@ -227,7 +289,7 @@ export default function App() {
           </div>
 
           <button className="lang-swap" onClick={handleSwap} disabled={isCapturing} title="Swap">
-            ⇄
+            <IconSwap />
           </button>
 
           <div className="lang-group">
@@ -251,7 +313,7 @@ export default function App() {
         {/* Audio Output Device */}
         <div className="output-device-section">
           <div className="output-device-header">
-            <span className="output-device-label">🔊 Translation Output</span>
+            <span className="output-device-label"><IconVolume /> Translation Output</span>
           </div>
           <div className="output-routing-note" aria-live="polite">
             System Default (fixed)
@@ -269,7 +331,10 @@ export default function App() {
           className={`action-btn ${isCapturing ? "stop" : "start"}`}
           onClick={handleToggle}
         >
-          {isCapturing ? "⏹  Stop Translation" : "▶  Start Translation"}
+          <span className="action-btn-inner">
+            {isCapturing ? <IconStop /> : <IconPlay />}
+            <span>{isCapturing ? "Stop Translation" : "Start Translation"}</span>
+          </span>
         </button>
 
         {/* Transcript */}
@@ -303,7 +368,8 @@ export default function App() {
           className="settings-toggle"
           onClick={() => setShowSettings(!showSettings)}
         >
-          ⚙ {showSettings ? "Hide" : "Show"} Settings
+          <IconSettings />
+          <span>{showSettings ? "Hide" : "Show"} Settings</span>
         </button>
 
         {/* Settings Panel */}
