@@ -1,6 +1,6 @@
 /**
  * Captures the Google Meet tab's audio output (remote participants)
- * as 16-bit PCM at 16kHz using chrome.tabCapture via the background script.
+ * as 16-bit PCM at 16kHz using getDisplayMedia to capture tab audio.
  */
 
 const SAMPLE_RATE = 16000;
@@ -22,27 +22,18 @@ export function createAudioCapture(): AudioCaptureHandle {
     onChunk: null,
 
     async start() {
-      const response = await browser.runtime.sendMessage({
-        type: "requestTabCapture",
-      });
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        audio: true,
+        video: true,
+        preferCurrentTab: true,
+      } as any);
 
-      if (response?.error) {
-        throw new Error(`Tab capture failed: ${response.error}`);
+      stream.getVideoTracks().forEach((t) => t.stop());
+
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        throw new Error("No audio track — make sure you selected 'Share tab audio'");
       }
-
-      const { streamId } = response;
-      if (!streamId) {
-        throw new Error("No stream ID returned from tab capture");
-      }
-
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          mandatory: {
-            chromeMediaSource: "tab",
-            chromeMediaSourceId: streamId,
-          },
-        } as any,
-      });
 
       audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
       source = audioCtx.createMediaStreamSource(stream);
