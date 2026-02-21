@@ -3,13 +3,7 @@ import { handleWebSocket } from "./ws/handler";
 import { cloneVoice } from "./pipeline/voice-clone";
 
 const PORT = Number(process.env.WS_SERVER_PORT) || 8080;
-const ECHO_MODE = process.env.ECHO_MODE === "true";
 const sessionManager = new SessionManager();
-
-if (ECHO_MODE) {
-  sessionManager.setEchoMode(true);
-  console.log("[interpreter] ECHO_MODE enabled — audio will be looped back to sender");
-}
 
 const server = Bun.serve({
   port: PORT,
@@ -20,7 +14,6 @@ const server = Bun.serve({
       return Response.json({
         status: "ok",
         uptime: process.uptime(),
-        echoMode: ECHO_MODE,
       });
     }
 

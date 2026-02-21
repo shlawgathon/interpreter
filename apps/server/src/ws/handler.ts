@@ -117,6 +117,8 @@ function handleJsonMessage(
   }
 }
 
+let audioFrameCount = 0;
+
 function handleBinaryMessage(
   ws: ServerWebSocket<WsData>,
   sessions: SessionManager,
@@ -125,12 +127,17 @@ function handleBinaryMessage(
   const buf = data instanceof ArrayBuffer
     ? data
     : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  const { prefix, speakerId, pcm } = decodeAudioFrame(buf);
+  const { prefix, pcm } = decodeAudioFrame(buf);
 
   if (prefix !== AUDIO_PREFIX.MIC) return;
 
-  const { sessionId } = ws.data;
-  if (!sessionId) return;
+  const { sessionId, participantId } = ws.data;
+  if (!sessionId || !participantId) return;
 
-  sessions.routeAudio(sessionId, speakerId, pcm);
+  audioFrameCount++;
+  if (audioFrameCount % 25 === 1) {
+    console.log(`[audio] frame #${audioFrameCount} from ${participantId} (${pcm.byteLength} bytes)`);
+  }
+
+  sessions.routeAudio(sessionId, participantId, pcm);
 }

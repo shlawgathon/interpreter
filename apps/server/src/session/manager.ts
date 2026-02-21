@@ -27,12 +27,6 @@ function genId(prefix: string): string {
 export class SessionManager {
   private sessions = new Map<string, SessionEntry>();
   private codeToSession = new Map<string, string>();
-  private echoMode = false;
-
-  setEchoMode(on: boolean) {
-    this.echoMode = on;
-  }
-
   createSession(code: string): string {
     const id = genId("sess");
     this.sessions.set(id, {
@@ -74,14 +68,12 @@ export class SessionManager {
       ...info,
     };
 
-    if (!this.echoMode) {
-      entry.pipeline = createSpeechPipeline({
-        participantId,
-        spokenLanguage: info.spokenLanguage,
-        sessionManager: this,
-        sessionId,
-      });
-    }
+    entry.pipeline = createSpeechPipeline({
+      participantId,
+      spokenLanguage: info.spokenLanguage,
+      sessionManager: this,
+      sessionId,
+    });
 
     session.participants.set(participantId, entry);
     console.log(
@@ -155,17 +147,21 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    if (this.echoMode) {
-      // In echo mode, send audio back to the sender for loopback testing
-      const speaker = session.participants.get(speakerId);
-      if (speaker) {
-        sendDubbedAudio(speaker.ws, speakerId, pcm);
-      }
+    const speaker = session.participants.get(speakerId);
+    if (!speaker) {
+      console.warn(`[audio] unknown speaker ${speakerId}`);
       return;
     }
 
-    const speaker = session.participants.get(speakerId);
-    if (!speaker?.pipeline) return;
+    if (!speaker.pipeline) {
+      console.log(`[audio] lazy-creating pipeline for ${speakerId}`);
+      speaker.pipeline = createSpeechPipeline({
+        participantId: speakerId,
+        spokenLanguage: speaker.spokenLanguage,
+        sessionManager: this,
+        sessionId,
+      });
+    }
 
     speaker.pipeline.feedAudio(pcm);
   }
@@ -183,8 +179,8 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    for (const [pid, p] of session.participants) {
-      if (pid !== speakerId && p.listenLanguage === listenLanguage) {
+    for (const [, p] of session.participants) {
+      if (p.listenLanguage === listenLanguage) {
         sendDubbedAudio(p.ws, speakerId, pcm);
       }
     }
@@ -205,8 +201,8 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    for (const [pid, p] of session.participants) {
-      if (pid !== speakerId && p.listenLanguage === targetLang) {
+    for (const [, p] of session.participants) {
+      if (p.listenLanguage === targetLang) {
         sendJson(p.ws, {
           type: "transcript",
           speakerId,
@@ -230,6 +226,43 @@ export class SessionManager {
       }
     }
     return Array.from(langs);
+  }
+
+  getAllListenerLanguages(sessionId: string): string[] {
+    const session = this.sessions.get(sessionId);
+    if (!session) return [];
+
+    const langs = new Set<string>();
+    for (const [, p] of session.participants) {
+      langs.add(p.listenLanguage);
+    }
+    return Array.from(langs);
+  }
+
+  broadcastTranscript(
+    sessionId: string,
+    speakerId: string,
+    speakerName: string,
+    original: string,
+    translated: string,
+    targetLang: string,
+    isFinal: boolean,
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    for (const [, p] of session.participants) {
+      if (p.listenLanguage === targetLang) {
+        sendJson(p.ws, {
+          type: "transcript",
+          speakerId,
+          speakerName,
+          original,
+          translated,
+          isFinal,
+        });
+      }
+    }
   }
 
   getParticipantName(sessionId: string, participantId: string): string {

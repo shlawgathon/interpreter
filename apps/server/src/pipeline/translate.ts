@@ -14,12 +14,12 @@ interface TranslateOpts {
   voiceId?: string;
 }
 
-const MINIMAX_CHAT_URL = "https://api.minimax.chat/v1/text/chatcompletion_v2";
+const MINIMAX_CHAT_URL = "https://api.minimax.io/v1/text/chatcompletion_v2";
 
-/**
- * Translates text via MiniMax chat completion (streaming),
- * then feeds the complete translation to TTS.
- */
+function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
 export async function translateAndSpeak(opts: TranslateOpts): Promise<void> {
   const {
     text, sourceLang, targetLang, speakerId,
@@ -29,15 +29,15 @@ export async function translateAndSpeak(opts: TranslateOpts): Promise<void> {
   const apiKey = process.env.MINIMAX_API_KEY;
   if (!apiKey) {
     console.warn("[translate] MINIMAX_API_KEY not set, skipping");
-    sessionManager.deliverTranscript(
-      sessionId, speakerId, speakerName, text,
-      `[translation unavailable] ${text}`, targetLang, true,
-    );
     return;
   }
 
+  if (text.replace(/[.,!?;:\s]/g, "").length === 0) return;
+
   const srcName = getLanguageName(sourceLang);
   const tgtName = getLanguageName(targetLang);
+
+  console.log(`[translate] "${text}" (${sourceLang} → ${targetLang})`);
 
   try {
     const res = await fetch(MINIMAX_CHAT_URL, {
@@ -47,17 +47,17 @@ export async function translateAndSpeak(opts: TranslateOpts): Promise<void> {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "MiniMax-Text-01",
+        model: "MiniMax-M2.5-highspeed",
         messages: [
           {
             role: "system",
-            content: `You are a real-time speech translator. Translate the following ${srcName} text to ${tgtName}. Output ONLY the translation — no quotes, no explanations, no extra text.`,
+            content: `You are a live interpreter. The speaker is talking in ${srcName}. Translate their words into ${tgtName} in first person, exactly as they said it — as if you ARE them speaking ${tgtName}. Output ONLY the direct translation. No narration, no notes, no quotes, no third-person rewording.`,
           },
           { role: "user", content: text },
         ],
-        stream: true,
-        temperature: 0.3,
-        max_tokens: 500,
+        stream: false,
+        temperature: 0.1,
+        max_tokens: 300,
       }),
     });
 
@@ -66,42 +66,18 @@ export async function translateAndSpeak(opts: TranslateOpts): Promise<void> {
       return;
     }
 
-    if (!res.body) return;
+    const json = await res.json();
+    let translated: string =
+      json?.choices?.[0]?.message?.content ?? "";
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let translated = "";
+    translated = stripThinkTags(translated).trim();
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed === "data: [DONE]") continue;
-
-        const jsonStr = trimmed.startsWith("data: ")
-          ? trimmed.slice(6)
-          : trimmed;
-
-        try {
-          const chunk = JSON.parse(jsonStr);
-          const delta =
-            chunk?.choices?.[0]?.delta?.content ?? "";
-          translated += delta;
-        } catch {
-          // skip non-JSON lines
-        }
-      }
+    if (!translated) {
+      console.warn("[translate] got empty translation");
+      return;
     }
 
-    translated = translated.trim();
-    if (!translated) return;
+    console.log(`[translate] ✓ "${text}" → "${translated}"`);
 
     sessionManager.deliverTranscript(
       sessionId, speakerId, speakerName,

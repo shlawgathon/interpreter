@@ -9,7 +9,7 @@ interface TTSOpts {
   voiceId?: string;
 }
 
-const MINIMAX_TTS_HTTP = "https://api.minimax.chat/v1/t2a_v2";
+const MINIMAX_TTS_HTTP = "https://api.minimax.io/v1/t2a_v2";
 
 const DEFAULT_VOICES: Record<string, string> = {
   en: "Wise_Woman",

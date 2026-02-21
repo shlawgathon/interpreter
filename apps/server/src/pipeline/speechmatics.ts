@@ -27,6 +27,36 @@ export function createSpeechPipeline(opts: PipelineOptions): SpeechPipeline {
   let ready = false;
   const pendingAudio: ArrayBuffer[] = [];
 
+  let sentenceBuffer = "";
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const FLUSH_DELAY_MS = 1500;
+
+  function flushSentence() {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    const text = sentenceBuffer.trim();
+    sentenceBuffer = "";
+    if (!text || text.replace(/[.,!?;:\s]/g, "").length === 0) return;
+
+    console.log(`[stt] sentence: "${text}"`);
+    const speakerName = sessionManager.getParticipantName(sessionId, participantId);
+    const targetLangs = sessionManager.getAllListenerLanguages(sessionId);
+
+    for (const targetLang of targetLangs) {
+      if (targetLang === spokenLanguage) continue;
+      const voiceId = sessionManager.getParticipantVoiceId(sessionId, participantId);
+      translateAndSpeak({
+        text,
+        sourceLang: spokenLanguage,
+        targetLang,
+        speakerId: participantId,
+        speakerName,
+        sessionId,
+        sessionManager,
+        voiceId,
+      });
+    }
+  }
+
   client.addEventListener("receiveMessage", ({ data }: any) => {
     if (data.message === "RecognitionStarted") {
       ready = true;
@@ -49,37 +79,15 @@ export function createSpeechPipeline(opts: PipelineOptions): SpeechPipeline {
 
     if (!text) return;
 
-    const speakerName = sessionManager.getParticipantName(sessionId, participantId);
-    const targetLangs = sessionManager.getListenerLanguages(sessionId, participantId);
+    if (isFinal) {
+      sentenceBuffer += (sentenceBuffer ? " " : "") + text;
 
-    for (const targetLang of targetLangs) {
-      if (targetLang === spokenLanguage) {
-        sessionManager.deliverTranscript(
-          sessionId, participantId, speakerName,
-          text, text, targetLang, isFinal,
-        );
-        continue;
-      }
-
-      if (isPartial) {
-        sessionManager.deliverTranscript(
-          sessionId, participantId, speakerName,
-          text, `[translating...] ${text}`, targetLang, false,
-        );
-      }
-
-      if (isFinal) {
-        const voiceId = sessionManager.getParticipantVoiceId(sessionId, participantId);
-        translateAndSpeak({
-          text,
-          sourceLang: spokenLanguage,
-          targetLang,
-          speakerId: participantId,
-          speakerName,
-          sessionId,
-          sessionManager,
-          voiceId,
-        });
+      const endsWithPunctuation = /[.!?]$/.test(text);
+      if (endsWithPunctuation) {
+        flushSentence();
+      } else {
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = setTimeout(flushSentence, FLUSH_DELAY_MS);
       }
     }
   });
@@ -96,12 +104,15 @@ export function createSpeechPipeline(opts: PipelineOptions): SpeechPipeline {
       return;
     }
 
+    console.log(`[stt] connecting for ${participantId} (lang=${spokenLanguage})...`);
+
     try {
       const jwt = await createSpeechmaticsJWT({
         type: "rt",
         apiKey,
         ttl: 3600,
       });
+      console.log("[stt] JWT created, starting session...");
 
       await client.start(jwt, {
         transcription_config: {
@@ -116,6 +127,7 @@ export function createSpeechPipeline(opts: PipelineOptions): SpeechPipeline {
           sample_rate: 16000,
         },
       });
+      console.log("[stt] client.start() resolved");
     } catch (err) {
       console.error("[stt] Failed to connect:", err);
     }

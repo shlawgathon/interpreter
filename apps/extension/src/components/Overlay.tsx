@@ -26,6 +26,7 @@ export function Overlay() {
   const wsRef = useRef<WsClientHandle | null>(null);
   const captureRef = useRef<AudioCaptureHandle | null>(null);
   const playbackRef = useRef<AudioPlaybackHandle | null>(null);
+  const participantIdRef = useRef("");
 
   useEffect(() => {
     const ws = createWsClient();
@@ -38,8 +39,10 @@ export function Overlay() {
         case "joined":
           setJoined(true);
           setParticipantId(msg.participantId);
+          participantIdRef.current = msg.participantId;
           setSpeakers(msg.participants);
           setError(null);
+          console.log("[interpreter] joined session, participantId:", msg.participantId);
           break;
         case "error":
           setError((msg as any).message);
@@ -103,8 +106,9 @@ export function Overlay() {
     });
 
     capture.onChunk = (pcm) => {
-      if (participantId) {
-        wsRef.current?.sendAudio(participantId, pcm);
+      const pid = participantIdRef.current;
+      if (pid) {
+        wsRef.current?.sendAudio(pid, pcm);
       }
     };
   };
