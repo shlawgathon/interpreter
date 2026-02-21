@@ -228,22 +228,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       break;
 
-    case "get-output-devices":
-      // Forward to offscreen to enumerate output devices
-      ensureOffscreenDocument().then(() => {
-        chrome.runtime.sendMessage(
-          { type: "get-output-devices", target: "offscreen" },
-          (devices) => sendResponse(devices)
-        );
-      });
-      return true; // async
-
     case "set-output-device":
       // Forward to offscreen to set output device
-      chrome.runtime.sendMessage({
-        type: "set-output-device",
-        target: "offscreen",
-        deviceId: message.deviceId,
+      ensureOffscreenDocument().then(() => {
+        chrome.runtime.sendMessage({
+          type: "set-output-device",
+          target: "offscreen",
+          deviceId: message.deviceId,
+        });
       });
       break;
 

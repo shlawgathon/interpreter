@@ -60,34 +60,46 @@ export default function App() {
       }
     });
 
-    // Enumerate output devices
+    // Enumerate output devices directly in popup
     loadOutputDevices();
   }, []);
 
-  const loadOutputDevices = () => {
-    chrome.runtime.sendMessage(
-      { type: "get-output-devices", target: "background" },
-      (devices: AudioDevice[] | undefined) => {
-        if (devices && Array.isArray(devices)) {
-          setOutputDevices(devices);
-          // Auto-select BlackHole if no device selected yet
-          if (!selectedDevice) {
-            const blackhole = devices.find((d) =>
-              d.label.toLowerCase().includes("blackhole")
-            );
-            if (blackhole) {
-              setSelectedDevice(blackhole.deviceId);
-              chrome.storage.sync.set({ outputDeviceId: blackhole.deviceId });
-              chrome.runtime.sendMessage({
-                type: "set-output-device",
-                target: "background",
-                deviceId: blackhole.deviceId,
-              });
-            }
-          }
+  const loadOutputDevices = async () => {
+    try {
+      // Request mic permission first so device labels are visible
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+      } catch {
+        // Permission denied — labels may show as empty
+      }
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = allDevices
+        .filter((d) => d.kind === "audiooutput")
+        .map((d) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Output ${d.deviceId.slice(0, 8)}`,
+        }));
+      setOutputDevices(outputs);
+
+      // Auto-select BlackHole if no device selected yet
+      if (!selectedDevice) {
+        const blackhole = outputs.find((d) =>
+          d.label.toLowerCase().includes("blackhole")
+        );
+        if (blackhole) {
+          setSelectedDevice(blackhole.deviceId);
+          chrome.storage.sync.set({ outputDeviceId: blackhole.deviceId });
+          chrome.runtime.sendMessage({
+            type: "set-output-device",
+            target: "background",
+            deviceId: blackhole.deviceId,
+          });
         }
       }
-    );
+    } catch (err) {
+      console.error("[Popup] Failed to enumerate devices:", err);
+    }
   };
 
   const handleDeviceChange = (deviceId: string) => {
