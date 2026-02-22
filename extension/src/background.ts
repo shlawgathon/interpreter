@@ -32,6 +32,7 @@ type Message =
       sourceLang: string;
       targetLang: string;
       ttsProvider?: "minimax" | "speechmatics";
+      tabId?: number;
     }
   | { type: "stop-capture" }
   | { type: "audio-data"; data: number[] }
@@ -158,11 +159,73 @@ function disconnectBackend(): void {
   }
 }
 
+function isCapturableTabUrl(url?: string): boolean {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  if (
+    lower.startsWith("chrome://") ||
+    lower.startsWith("chrome-extension://") ||
+    lower.startsWith("edge://") ||
+    lower.startsWith("about:")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function resolveCaptureTabId(
+  requestedTabId?: number,
+  senderTabId?: number
+): Promise<number | null> {
+  // Highest priority: explicit tab ID from popup.
+  if (requestedTabId) {
+    try {
+      const tab = await chrome.tabs.get(requestedTabId);
+      if (tab.id && isCapturableTabUrl(tab.url)) return tab.id;
+    } catch {
+      // fall through to other strategies
+    }
+  }
+
+  // Second priority: sender tab (content script / widget).
+  if (senderTabId) {
+    try {
+      const tab = await chrome.tabs.get(senderTabId);
+      if (tab.id && isCapturableTabUrl(tab.url)) return tab.id;
+    } catch {
+      // fall through to other strategies
+    }
+  }
+
+  // Prefer the most recently focused Google Meet tab if present.
+  const meetTabs = await chrome.tabs.query({ url: ["https://meet.google.com/*"] });
+  if (meetTabs.length > 0) {
+    meetTabs.sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+    const meet = meetTabs.find((tab) => tab.id && isCapturableTabUrl(tab.url));
+    if (meet?.id) return meet.id;
+  }
+
+  // Fallback: active tab in last focused normal browser window.
+  const [focusedActive] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  if (focusedActive?.id && isCapturableTabUrl(focusedActive.url)) {
+    return focusedActive.id;
+  }
+
+  // Final fallback: any active capturable tab.
+  const activeTabs = await chrome.tabs.query({ active: true });
+  const candidate = activeTabs.find((tab) => tab.id && isCapturableTabUrl(tab.url));
+  return candidate?.id ?? null;
+}
+
 // ── Start / Stop Capture ──
 async function startCapture(
   sourceLang: string,
   targetLang: string,
   ttsProvider?: "minimax" | "speechmatics",
+  requestedTabId?: number,
   senderTabId?: number
 ): Promise<void> {
   state.sourceLang = sourceLang;
@@ -171,20 +234,14 @@ async function startCapture(
     state.ttsProvider = ttsProvider;
   }
 
-  let tabId = senderTabId;
-  if (!tabId) {
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-    tabId = tab?.id;
-  }
+  const tabId = await resolveCaptureTabId(requestedTabId, senderTabId);
   if (!tabId) {
     broadcastToPopup({ type: "error", message: "No active tab found" });
     return;
   }
 
   state.tabId = tabId;
+  console.log("[BG] Using tab for capture:", tabId);
 
   // Connect to backend first
   connectToBackend();
@@ -256,7 +313,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case "start-capture": {
       const senderTabId = sender.tab?.id;
-      startCapture(message.sourceLang, message.targetLang, message.ttsProvider, senderTabId)
+      startCapture(
+        message.sourceLang,
+        message.targetLang,
+        message.ttsProvider,
+        message.tabId,
+        senderTabId
+      )
         .then(() => sendResponse({ success: true }))
         .catch((e) => {
           broadcastToPopup({ type: "error", message: e.message });

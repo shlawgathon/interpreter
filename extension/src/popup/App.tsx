@@ -325,9 +325,11 @@ export default function App() {
       chrome.runtime.sendMessage({ type: "stop-capture", target: "background" });
     } else {
       setErrorMsg("");
-      captureStartedAtRef.current = Date.now();
-      setIsCapturing(true);
-      setStatus("capturing");
+      const [activeTab] = await chrome.tabs.query({
+        active: true,
+        lastFocusedWindow: true,
+      });
+      const tabId = activeTab?.id;
       if (selectedDevice) {
         chrome.runtime.sendMessage({
           type: "set-output-device",
@@ -340,6 +342,21 @@ export default function App() {
         target: "background",
         sourceLang,
         targetLang,
+        tabId,
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          setStatus("error");
+          setErrorMsg(chrome.runtime.lastError.message || "Failed to start capture");
+          return;
+        }
+        if (!response?.success) {
+          setStatus("error");
+          setErrorMsg(response?.error || "Failed to start capture");
+          return;
+        }
+        captureStartedAtRef.current = Date.now();
+        setIsCapturing(true);
+        setStatus("capturing");
       });
     }
   }, [isCapturing, sourceLang, targetLang, selectedDevice]);

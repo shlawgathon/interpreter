@@ -705,8 +705,11 @@ class InterpreterWidget {
 
   /* ── Helpers ── */
 
-  private el(tag: string, className?: string): HTMLDivElement {
-    const e = document.createElement(tag) as HTMLDivElement;
+  private el<K extends keyof HTMLElementTagNameMap>(
+    tag: K,
+    className?: string
+  ): HTMLElementTagNameMap[K] {
+    const e = document.createElement(tag);
     if (className) e.className = className;
     return e;
   }
