@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1a1a22"/>
+      <stop offset="1" stop-color="#12121a"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="20" y1="28" x2="108" y2="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f7d994"/>
+      <stop offset="1" stop-color="#e0a832"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="54" y1="48" x2="74" y2="80" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0c674"/>
+      <stop offset="1" stop-color="#d4943a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+
+  <path d="M22 42C22 34.3 28.3 28 36 28L58 28C65.7 28 72 34.3 72 42L72 58C72 65.7 65.7 72 58 72L42 72L32 82L32 72L36 72C28.3 72 22 65.7 22 58Z" fill="url(#amber)" opacity="0.35"/>
+
+  <path d="M56 48C56 40.3 62.3 34 70 34L92 34C99.7 34 106 40.3 106 48L106 68C106 75.7 99.7 82 92 82L88 82L88 94L76 82L70 82C62.3 82 56 75.7 56 68Z" fill="url(#amber)" opacity="0.9"/>
+
+  <text x="46" y="58" font-family="system-ui,sans-serif" font-weight="700" font-size="22" fill="#f0c674" text-anchor="middle" dominant-baseline="central" opacity="0.8">A</text>
+
+  <text x="81" y="62" font-family="system-ui,sans-serif" font-weight="700" font-size="18" fill="#1a1a22" text-anchor="middle" dominant-baseline="central">&#12354;</text>
+
+  <path d="M50 76C56 70 56 60 50 54" stroke="url(#wave)" stroke-width="2.4" stroke-linecap="round" fill="none" opacity="0.6"/>
+  <path d="M54 78C62 70 62 58 54 50" stroke="url(#wave)" stroke-width="2.4" stroke-linecap="round" fill="none" opacity="0.4"/>
+
+  <rect width="128" height="128" rx="28" fill="none" stroke="#f0c674" stroke-width="1" opacity="0.12"/>
+</svg>
