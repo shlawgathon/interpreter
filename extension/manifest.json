@@ -22,5 +22,12 @@
     "activeTab",
     "storage",
     "tabs"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["src/content/meet-widget.ts"],
+      "run_at": "document_idle"
+    }
   ]
 }

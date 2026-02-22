@@ -162,7 +162,8 @@ function disconnectBackend(): void {
 async function startCapture(
   sourceLang: string,
   targetLang: string,
-  ttsProvider?: "minimax" | "speechmatics"
+  ttsProvider?: "minimax" | "speechmatics",
+  senderTabId?: number
 ): Promise<void> {
   state.sourceLang = sourceLang;
   state.targetLang = targetLang;
@@ -170,17 +171,20 @@ async function startCapture(
     state.ttsProvider = ttsProvider;
   }
 
-  // Get active tab
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
-  if (!tab?.id) {
+  let tabId = senderTabId;
+  if (!tabId) {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    tabId = tab?.id;
+  }
+  if (!tabId) {
     broadcastToPopup({ type: "error", message: "No active tab found" });
     return;
   }
 
-  state.tabId = tab.id;
+  state.tabId = tabId;
 
   // Connect to backend first
   connectToBackend();
@@ -191,7 +195,7 @@ async function startCapture(
   // Get stream ID for tab capture
   const streamId = await new Promise<string>((resolve, reject) => {
     chrome.tabCapture.getMediaStreamId(
-      { targetTabId: tab.id },
+      { targetTabId: tabId },
       (id?: string) => {
         const err = chrome.runtime.lastError;
         if (err) {
@@ -232,27 +236,34 @@ async function stopCapture(): Promise<void> {
 
   state.isCapturing = false;
   state.captureStartedAt = null;
-  state.tabId = null;
   broadcastToPopup({ type: "status", status: "idle" });
+  state.tabId = null;
 }
 
-// ── Broadcast to Popup ──
+// ── Broadcast to Popup + Content Script ──
 function broadcastToPopup(msg: object): void {
-  chrome.runtime.sendMessage({ ...msg, target: "popup" }).catch(() => {
-    // Popup might be closed, ignore
-  });
+  const fullMsg = { ...msg, target: "popup" };
+  chrome.runtime.sendMessage(fullMsg).catch(() => {});
+  if (state.tabId) {
+    chrome.tabs.sendMessage(state.tabId, fullMsg).catch(() => {});
+  }
 }
 
 // ── Message Listener ──
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target && message.target !== "background") return;
 
   switch (message.type) {
-    case "start-capture":
-      startCapture(message.sourceLang, message.targetLang, message.ttsProvider)
+    case "start-capture": {
+      const senderTabId = sender.tab?.id;
+      startCapture(message.sourceLang, message.targetLang, message.ttsProvider, senderTabId)
         .then(() => sendResponse({ success: true }))
-        .catch((e) => sendResponse({ success: false, error: e.message }));
-      return true; // async response
+        .catch((e) => {
+          broadcastToPopup({ type: "error", message: e.message });
+          sendResponse({ success: false, error: e.message });
+        });
+      return true;
+    }
 
     case "stop-capture":
       stopCapture()
