@@ -14,10 +14,17 @@ flowchart LR
         H --> I["BlackHole / Speakers"]
     end
 
+    subgraph web ["Web Dashboard"]
+        J["Sign In\n(Clerk Auth)"] --> K["Profile Setup\n(language, name)"]
+        K --> L["Voice Warmup\n(record & clone)"]
+    end
+
     C -- WebSocket --> D["FastAPI Backend"]
     D --> E["Speechmatics STT\n+ RT Translation"]
     E --> F["TTS Provider\n(MiniMax / Speechmatics)"]
     F --> G
+    L -- "Voice profile" --> M["Convex DB"]
+    D -- "Lookup voice profile" --> M
 ```
 
 **Audio routing flow:**
@@ -53,7 +60,26 @@ Then load in Chrome:
 3. Click **Load unpacked** → select `extension/dist` folder
 4. Allow microphone permission when prompted (needed for device enumeration)
 
-### 3. Use It
+### 3. Web Dashboard (Voice Profile & Clone Setup)
+
+```bash
+cd web
+npm install
+npx convex dev          # Start Convex dev server (needs CONVEX_DEPLOYMENT in .env.local)
+npm run dev             # Starts on http://localhost:5174
+```
+
+The web dashboard requires a `.env.local` file with:
+
+```env
+VITE_CONVEX_URL=<your Convex deployment URL>
+VITE_CLERK_PUBLISHABLE_KEY=<your Clerk publishable key>
+VITE_SERVER_URL=http://localhost:8000
+VITE_CONVEX_SITE_URL=<your Convex site URL>
+CONVEX_DEPLOYMENT=<your Convex deployment>
+```
+
+### 4. Use It
 
 1. Open any web chat (Google Meet, YouTube, etc.)
 2. Click the Interpreter extension icon
@@ -66,6 +92,25 @@ Notes:
 
 - Original tab audio passthrough is disabled in offscreen capture, so you should not hear untranslated + translated from the extension at the same time.
 - If output is set to BlackHole 2ch, local speakers are silent by design unless you monitor with a Multi-Output device.
+
+## Web Dashboard (Voice Profile & Cloning)
+
+The web dashboard (`web/`) is a React app for managing user profiles and voice cloning. It lets users:
+
+- **Sign in** via Clerk authentication
+- **Set a display name and preferred language**
+- **Record a voice sample** and create a MiniMax voice clone
+
+When voice cloning is enabled, the backend looks up the speaker's voice profile from Convex during translation so listeners hear translated speech rendered in the original speaker's cloned voice.
+
+**Stack:** React 18, Vite, Convex (database + file storage), Clerk (auth)
+
+**How it connects:**
+
+1. User signs in and creates a profile on the web dashboard.
+2. User records a voice sample; the app uploads it to Convex storage and sends it to MiniMax to create a voice clone (`voiceProfileId`).
+3. During a live call, the backend queries the Convex HTTP endpoint (`GET /api/voice-profile?userId=...`) to fetch the speaker's `voiceProfileId`.
+4. If a valid profile exists, TTS renders in the cloned voice; otherwise it falls back to a standard voice.
 
 ## BlackHole Setup (Route Audio into Calls)
 
@@ -136,7 +181,9 @@ Guidance:
 
 - **Extension**: React, TypeScript, Vite, CRXJS, Chrome MV3
 - **Backend**: Python, FastAPI, WebSocket, uv
+- **Web Dashboard**: React 18, TypeScript, Vite, Convex, Clerk
 - **STT**: Speechmatics Real-time API
 - **Translation**: Speechmatics RT Translation (recommended low-latency mode) or MiniMax M2 fallback
 - **TTS**: MiniMax Speech 2.8 Turbo (default) or Speechmatics preview TTS (test option)
+- **Voice Cloning**: MiniMax Voice Clone API (via web dashboard voice warmup flow)
 - **Audio Routing**: BlackHole (macOS virtual audio loopback)
