@@ -19,6 +19,8 @@ logger = logging.getLogger("interpreter.minimax")
 # MiniMax API endpoints (current official domain)
 CHAT_URL = "https://api.minimax.io/v1/text/chatcompletion_v2"
 TTS_WS_URL = "wss://api.minimax.io/ws/v1/t2a_v2"
+FILE_UPLOAD_URL = "https://api.minimax.io/v1/files/upload"
+VOICE_CLONE_URL = "https://api.minimax.io/v1/voice_clone"
 
 DEFAULT_TEXT_MODEL = "MiniMax-M2"
 DEFAULT_TTS_MODEL = "speech-2.8-turbo"
@@ -273,15 +275,17 @@ class MinimaxClient:
         self,
         text: str,
         language: str = "en",
+        voice_id: Optional[str] = None,
     ) -> Optional[bytes]:
         """
         Generate speech audio using MiniMax T2A WebSocket API.
         Returns MP3 audio bytes assembled from streaming chunks.
+        If voice_id is provided, it overrides the language-based voice selection.
         """
         if not text.strip():
             return None
 
-        voice_id = self._resolve_voice_id(language)
+        voice_id = voice_id or self._resolve_voice_id(language)
         try:
             return await self._text_to_speech_once(text=text, voice_id=voice_id)
         except ValueError as e:
@@ -446,6 +450,93 @@ class MinimaxClient:
                     "status_msg", "Unknown TTS websocket failure"
                 )
                 raise ValueError(f"MiniMax TTS task_failed: {status_msg}")
+
+    async def upload_file(
+        self,
+        audio_bytes: bytes,
+        filename: str = "voice_sample.wav",
+        purpose: str = "voice_clone",
+    ) -> str:
+        """
+        Upload an audio file to MiniMax File API.
+        Returns the file_id for use with voice clone API.
+        """
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        files = {"file": (filename, audio_bytes)}
+        data = {"purpose": purpose}
+
+        resp = await self.client.post(
+            FILE_UPLOAD_URL,
+            headers=headers,
+            data=data,
+            files=files,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+
+        file_id = result.get("file", {}).get("file_id")
+        if not file_id:
+            raise ValueError(f"MiniMax file upload returned no file_id: {result}")
+
+        logger.info("MiniMax file uploaded: %s (purpose=%s)", file_id, purpose)
+        return file_id
+
+    async def voice_clone_tts(
+        self,
+        text: str,
+        file_id: str,
+        voice_id: str = "cloned_voice",
+        model: str = "speech-2.6-hd",
+    ) -> Optional[bytes]:
+        """
+        Synthesize speech using MiniMax voice clone API.
+        Sends the cloned voice file_id and text, returns audio bytes.
+        """
+        if not text.strip():
+            return None
+
+        payload = {
+            "file_id": file_id,
+            "voice_id": voice_id,
+            "text": text,
+            "model": model,
+        }
+
+        try:
+            resp = await self.client.post(
+                VOICE_CLONE_URL,
+                headers=self._headers,
+                json=payload,
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+
+            # Response contains base64-encoded audio
+            import base64
+            audio_b64 = result.get("audio", "")
+            if not audio_b64:
+                logger.warning("MiniMax voice clone returned no audio: %s", result)
+                return None
+
+            audio_bytes = base64.b64decode(audio_b64)
+            logger.info(
+                "MiniMax voice clone TTS generated %d bytes (voice_id=%s)",
+                len(audio_bytes),
+                voice_id,
+            )
+            return audio_bytes
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "MiniMax voice clone HTTP error: %s - %s",
+                e.response.status_code,
+                e.response.text,
+            )
+            raise
+        except (ConnectionError, ValueError) as e:
+            logger.error("MiniMax voice clone error: %s", e)
+            raise
 
     async def close(self):
         """Close the HTTP client."""
