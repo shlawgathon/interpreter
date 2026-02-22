@@ -10,7 +10,12 @@
   },
   "action": {
     "default_popup": "src/popup/index.html",
-    "default_title": "Interpreter"
+    "default_title": "Interpreter",
+    "default_icon": {
+      "16": "public/icon16.png",
+      "48": "public/icon48.png",
+      "128": "public/icon128.png"
+    }
   },
   "background": {
     "service_worker": "src/background.ts",
