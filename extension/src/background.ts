@@ -70,6 +70,28 @@ async function removeOffscreenDocument(): Promise<void> {
   }
 }
 
+async function sendMessageToOffscreen(
+  message: Record<string, unknown>,
+  retries = 12,
+  retryDelayMs = 80
+): Promise<void> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await chrome.runtime.sendMessage(message);
+      return;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const isReceiverNotReady =
+        errMsg.includes("Receiving end does not exist") ||
+        errMsg.includes("Could not establish connection");
+      if (!isReceiverNotReady || attempt === retries) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+}
+
 // ── Backend WebSocket Connection ──
 function connectToBackend(): void {
   if (state.backendSocket?.readyState === WebSocket.OPEN) return;
@@ -160,12 +182,15 @@ function disconnectBackend(): void {
 }
 
 function isCapturableTabUrl(url?: string): boolean {
-  if (!url) return false;
+  // URL can be unavailable due permission scope; treat unknown as capturable
+  // and let tabCapture return a precise error if needed.
+  if (!url) return true;
   const lower = url.toLowerCase();
   if (
     lower.startsWith("chrome://") ||
     lower.startsWith("chrome-extension://") ||
     lower.startsWith("edge://") ||
+    lower.startsWith("devtools://") ||
     lower.startsWith("about:")
   ) {
     return false;
@@ -178,7 +203,7 @@ async function resolveCaptureTabId(
   senderTabId?: number
 ): Promise<number | null> {
   // Highest priority: explicit tab ID from popup.
-  if (requestedTabId) {
+  if (typeof requestedTabId === "number") {
     try {
       const tab = await chrome.tabs.get(requestedTabId);
       if (tab.id && isCapturableTabUrl(tab.url)) return tab.id;
@@ -188,7 +213,7 @@ async function resolveCaptureTabId(
   }
 
   // Second priority: sender tab (content script / widget).
-  if (senderTabId) {
+  if (typeof senderTabId === "number") {
     try {
       const tab = await chrome.tabs.get(senderTabId);
       if (tab.id && isCapturableTabUrl(tab.url)) return tab.id;
@@ -197,15 +222,7 @@ async function resolveCaptureTabId(
     }
   }
 
-  // Prefer the most recently focused Google Meet tab if present.
-  const meetTabs = await chrome.tabs.query({ url: ["https://meet.google.com/*"] });
-  if (meetTabs.length > 0) {
-    meetTabs.sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
-    const meet = meetTabs.find((tab) => tab.id && isCapturableTabUrl(tab.url));
-    if (meet?.id) return meet.id;
-  }
-
-  // Fallback: active tab in last focused normal browser window.
+  // Fallback: active tab in last focused browser window.
   const [focusedActive] = await chrome.tabs.query({
     active: true,
     lastFocusedWindow: true,
@@ -214,10 +231,20 @@ async function resolveCaptureTabId(
     return focusedActive.id;
   }
 
-  // Final fallback: any active capturable tab.
+  // Next fallback: any active capturable tab.
   const activeTabs = await chrome.tabs.query({ active: true });
   const candidate = activeTabs.find((tab) => tab.id && isCapturableTabUrl(tab.url));
-  return candidate?.id ?? null;
+  if (candidate?.id) return candidate.id;
+
+  // Last fallback: most recently focused Google Meet tab.
+  const meetTabs = await chrome.tabs.query({ url: ["https://meet.google.com/*"] });
+  if (meetTabs.length > 0) {
+    meetTabs.sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+    const meet = meetTabs.find((tab) => tab.id && isCapturableTabUrl(tab.url));
+    if (meet?.id) return meet.id;
+  }
+
+  return null;
 }
 
 // ── Start / Stop Capture ──
@@ -269,7 +296,7 @@ async function startCapture(
   });
 
   // Tell offscreen to start capturing
-  chrome.runtime.sendMessage({
+  await sendMessageToOffscreen({
     type: "start-capture",
     target: "offscreen",
     streamId,
@@ -283,9 +310,11 @@ async function startCapture(
 
 async function stopCapture(): Promise<void> {
   // Tell offscreen to stop
-  chrome.runtime.sendMessage({
+  await sendMessageToOffscreen({
     type: "stop-capture",
     target: "offscreen",
+  }).catch(() => {
+    // Ignore if offscreen is already gone.
   });
 
   disconnectBackend();
@@ -353,7 +382,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.outputDeviceId = message.deviceId || null;
       // Forward to offscreen to set output device
       ensureOffscreenDocument().then(() => {
-        chrome.runtime.sendMessage({
+        void sendMessageToOffscreen({
           type: "set-output-device",
           target: "offscreen",
           deviceId: message.deviceId,
