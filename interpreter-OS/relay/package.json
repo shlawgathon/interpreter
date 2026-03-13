@@ -1,0 +1,12 @@
+{
+  "name": "interpreter-os-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch server.ts",
+    "start": "bun server.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
