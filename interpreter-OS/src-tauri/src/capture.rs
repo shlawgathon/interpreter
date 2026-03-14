@@ -1,5 +1,5 @@
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -15,6 +15,7 @@ use crate::models::{AudioLevelPayload, CaptureTarget};
 
 const DEFAULT_DISPLAY_ID: &str = "system::default";
 const METER_EMIT_INTERVAL_MS: u64 = 120;
+const TARGET_SAMPLE_RATE: AudioSampleRate = AudioSampleRate::Rate48000;
 
 pub struct ManagedCapture {
     stream: SCStream,
@@ -30,6 +31,7 @@ struct AudioOutputHandler {
     app: AppHandle,
     chunk_tx: mpsc::Sender<Vec<u8>>,
     last_meter_emit_ms: AtomicU64,
+    saw_audio: AtomicBool,
 }
 
 impl AudioOutputHandler {
@@ -38,6 +40,7 @@ impl AudioOutputHandler {
             app,
             chunk_tx,
             last_meter_emit_ms: AtomicU64::new(0),
+            saw_audio: AtomicBool::new(false),
         }
     }
 }
@@ -49,6 +52,26 @@ impl SCStreamOutputTrait for AudioOutputHandler {
         }
 
         if let Some(pcm) = sample_buffer_to_pcm16(&sample) {
+            if !self.saw_audio.swap(true, Ordering::Relaxed) {
+                if let Some(description) = sample.format_description() {
+                    let _ = self.app.emit(
+                        "session-audio-format",
+                        crate::models::AudioFormatPayload {
+                            sample_rate: description.audio_sample_rate().unwrap_or(0.0) as u32,
+                            channel_count: description.audio_channel_count().unwrap_or(0),
+                            bits_per_channel: description.audio_bits_per_channel().unwrap_or(0),
+                            float_format: description.audio_is_float(),
+                        },
+                    );
+                }
+                let _ = self.app.emit(
+                    "session-status",
+                    crate::models::StatusPayload {
+                        stage: "audio_detected".to_string(),
+                        message: "Audio detected locally. Streaming to relay.".to_string(),
+                    },
+                );
+            }
             maybe_emit_levels(&self.app, &self.last_meter_emit_ms, &pcm);
             let _ = self.chunk_tx.try_send(pcm);
         }
@@ -140,7 +163,7 @@ pub fn start_capture(
         .with_width(64)
         .with_height(64)
         .with_captures_audio(true)
-        .with_sample_rate(AudioSampleRate::Rate16000)
+        .with_sample_rate(TARGET_SAMPLE_RATE)
         .with_channel_count(AudioChannelCount::Mono)
         .with_excludes_current_process_audio(true);
 
@@ -194,33 +217,67 @@ fn sample_buffer_to_pcm16(sample: &CMSampleBuffer) -> Option<Vec<u8>> {
     let description = sample.format_description()?;
     let bits_per_channel = description.audio_bits_per_channel()?;
     let is_float = description.audio_is_float();
+    let channel_count = description.audio_channel_count().unwrap_or(1).max(1) as usize;
     let audio_buffers = sample.audio_buffer_list()?;
-    let capacity = audio_buffers
-        .iter()
-        .map(|buffer| buffer.data_byte_size())
-        .sum::<usize>();
 
-    let mut pcm = Vec::with_capacity(capacity);
+    let mono_samples = if audio_buffers.num_buffers() > 1 {
+        let per_channel = audio_buffers
+            .iter()
+            .map(|buffer| decode_pcm_samples(buffer.data(), is_float, bits_per_channel))
+            .collect::<Option<Vec<Vec<i16>>>>()?;
+        let sample_len = per_channel.iter().map(Vec::len).min().unwrap_or(0);
+        let mut downmixed = Vec::with_capacity(sample_len);
 
-    for buffer in &audio_buffers {
-        let data = buffer.data();
-
-        match (is_float, bits_per_channel) {
-            (true, 32) => {
-                for frame in data.chunks_exact(4) {
-                    let float_sample =
-                        f32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]])
-                            .clamp(-1.0, 1.0);
-                    let int_sample = (float_sample * i16::MAX as f32) as i16;
-                    pcm.extend_from_slice(&int_sample.to_le_bytes());
-                }
-            }
-            (false, 16) => pcm.extend_from_slice(data),
-            _ => return None,
+        for sample_index in 0..sample_len {
+            let total = per_channel
+                .iter()
+                .map(|channel| channel[sample_index] as i32)
+                .sum::<i32>();
+            downmixed.push((total / per_channel.len() as i32) as i16);
         }
+
+        downmixed
+    } else {
+        let interleaved = decode_pcm_samples(audio_buffers.get(0)?.data(), is_float, bits_per_channel)?;
+        if channel_count <= 1 {
+            interleaved
+        } else {
+            let mut downmixed = Vec::with_capacity(interleaved.len() / channel_count);
+            for frame in interleaved.chunks_exact(channel_count) {
+                let total = frame.iter().map(|sample| *sample as i32).sum::<i32>();
+                downmixed.push((total / channel_count as i32) as i16);
+            }
+            downmixed
+        }
+    };
+
+    let mut pcm = Vec::with_capacity(mono_samples.len() * 2);
+    for sample in mono_samples {
+        pcm.extend_from_slice(&sample.to_le_bytes());
     }
 
     Some(pcm)
+}
+
+fn decode_pcm_samples(data: &[u8], is_float: bool, bits_per_channel: u32) -> Option<Vec<i16>> {
+    match (is_float, bits_per_channel) {
+        (true, 32) => Some(
+            data.chunks_exact(4)
+                .map(|frame| {
+                    let float_sample =
+                        f32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]])
+                            .clamp(-1.0, 1.0);
+                    (float_sample * i16::MAX as f32) as i16
+                })
+                .collect(),
+        ),
+        (false, 16) => Some(
+            data.chunks_exact(2)
+                .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 fn unix_ms() -> u64 {

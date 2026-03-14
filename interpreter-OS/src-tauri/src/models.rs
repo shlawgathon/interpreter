@@ -20,6 +20,17 @@ pub struct StartSessionRequest {
     pub target_language: String,
     pub speak_translation: bool,
     pub voice_id: Option<String>,
+    pub tts_provider: Option<String>,
+    pub stt_provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioFormatPayload {
+    pub sample_rate: u32,
+    pub channel_count: u32,
+    pub bits_per_channel: u32,
+    pub float_format: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,13 +72,19 @@ pub enum RelayMessage {
     Transcript {
         transcript: String,
         translation: String,
+        #[serde(rename = "finalSegment")]
         final_segment: bool,
+        #[serde(rename = "detectedLanguage")]
         detected_language: Option<String>,
+        #[serde(rename = "latencyMs")]
         latency_ms: Option<u64>,
+        #[serde(rename = "receivedAt")]
         received_at: u64,
     },
     Tts {
+        #[serde(rename = "audioBase64")]
         audio_base64: String,
+        #[serde(rename = "mimeType")]
         mime_type: String,
     },
     Error { message: String },

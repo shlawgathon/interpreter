@@ -53,6 +53,8 @@ async fn relay_loop(
         "targetLanguage": request.target_language,
         "speakTranslation": request.speak_translation,
         "voiceId": request.voice_id,
+        "ttsProvider": request.tts_provider,
+        "sttProvider": request.stt_provider,
     });
 
     socket
@@ -91,7 +93,10 @@ async fn relay_loop(
                     }
                     Some(Ok(Message::Close(_))) => break,
                     Some(Ok(_)) => {}
-                    Some(Err(error)) => return Err(format!("Relay socket error: {error}")),
+                    Some(Err(error)) => {
+                        eprintln!("[desktop] relay socket error: {error}");
+                        return Err(format!("Relay socket error: {error}"));
+                    }
                     None => break,
                 }
             }
@@ -107,6 +112,7 @@ fn handle_relay_message(app: &AppHandle, raw: &str) -> Result<(), String> {
 
     match message {
         RelayMessage::Status { stage, message } => {
+            println!("[desktop] status -> {stage}: {message}");
             let _ = app.emit("session-status", StatusPayload { stage, message });
         }
         RelayMessage::Transcript {
@@ -138,6 +144,7 @@ fn handle_relay_message(app: &AppHandle, raw: &str) -> Result<(), String> {
             let _ = app.emit("session-tts", payload);
         }
         RelayMessage::Error { message } => {
+            eprintln!("[desktop] relay error -> {message}");
             let _ = app.emit(
                 "session-status",
                 StatusPayload {
