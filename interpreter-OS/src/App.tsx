@@ -162,8 +162,8 @@ function App() {
     import.meta.env.VITE_RELAY_BASE_URL ?? "http://127.0.0.1:8787",
   );
   const [voiceId, setVoiceId] = useState("");
-  const [ttsProvider, setTtsProvider] = useState("smallest");
-  const [sttProvider, setSttProvider] = useState("smallest");
+  const [ttsProvider, setTtsProvider] = useState("elevenlabs");
+  const [sttProvider, setSttProvider] = useState("elevenlabs");
   const [speakTranslation, setSpeakTranslation] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
   const [sessionStartedAt, setSessionStartedAt] = useState<number | null>(null);
