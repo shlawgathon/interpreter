@@ -6,9 +6,11 @@ backend/.venv/
 
 # Build output
 extension/dist/
+web/dist/
 
 # Environment
 backend/.env
+web/.env.local
 
 # OS
 .DS_Store

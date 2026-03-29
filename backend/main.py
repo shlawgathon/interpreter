@@ -14,6 +14,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from services.speechmatics_client import SpeechmaticsClient
 from services.minimax_client import MinimaxClient, get_language_name
@@ -48,6 +49,108 @@ app.add_middleware(
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "interpreter-backend"}
+
+
+class VoiceProfileRequest(BaseModel):
+    userId: str
+    audio: str  # base64-encoded audio
+    format: str = "webm"
+
+
+@app.post("/api/voice-profile")
+async def create_voice_profile(req: VoiceProfileRequest):
+    """
+    Create a voice profile by uploading audio to MiniMax file upload API.
+    Returns the MiniMax file_id which can be used for voice clone TTS.
+    """
+    import base64
+    import io
+
+    minimax_key = os.getenv("MINIMAX_API_KEY", "")
+    minimax_group_id = os.getenv("MINIMAX_GROUP_ID", "")
+
+    if not minimax_key:
+        raise ValueError("MINIMAX_API_KEY is required")
+
+    # Decode base64 audio
+    audio_bytes = base64.b64decode(req.audio)
+    logger.info(
+        "Uploading voice sample for user %s (%d bytes, format=%s)",
+        req.userId, len(audio_bytes), req.format,
+    )
+
+    # Upload to MiniMax file upload API
+    ext = req.format if req.format in {"mp3", "m4a", "wav", "webm"} else "wav"
+    upload_url = f"https://api.minimax.io/v1/files/upload?GroupId={minimax_group_id}"
+    headers = {"Authorization": f"Bearer {minimax_key}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            files = {"file": (f"voice_sample.{ext}", io.BytesIO(audio_bytes))}
+            data = {"purpose": "voice_clone"}
+            resp = await client.post(upload_url, headers=headers, data=data, files=files)
+            logger.info("MiniMax file upload status=%s body=%s", resp.status_code, resp.text)
+            resp.raise_for_status()
+            result = resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error("MiniMax upload HTTP error %s: %s", e.response.status_code, e.response.text)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=502, content={"error": f"MiniMax API error: {e.response.status_code}", "detail": e.response.text})
+    except Exception as e:
+        logger.error("MiniMax upload failed: %s", e)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    # MiniMax may return file_id at top level or nested under "file"
+    file_id = result.get("file_id") or (result.get("file") or {}).get("file_id")
+    if not file_id:
+        logger.error("MiniMax file upload response missing file_id: %s", result)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=502, content={"error": "No file_id in MiniMax response", "detail": str(result)})
+
+    file_id = str(file_id)
+    logger.info("MiniMax file uploaded for user %s: file_id=%s", req.userId, file_id)
+    return {"voiceProfileId": file_id}
+
+
+async def lookup_voice_profile(user_id: str) -> dict | None:
+    """
+    Query Convex HTTP API to fetch a user's voice profile.
+    Returns profile dict with voiceProfileId, voiceProfileStatus, language
+    or None if not found or on error.
+    """
+    convex_site_url = os.getenv("CONVEX_SITE_URL", "").rstrip("/")
+    if not convex_site_url or not user_id:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{convex_site_url}/api/voice-profile",
+                params={"userId": user_id},
+            )
+            if resp.status_code == 200:
+                profile = resp.json()
+                logger.info(
+                    "Convex voice profile for %s: status=%s, voiceProfileId=%s",
+                    user_id,
+                    profile.get("voiceProfileStatus"),
+                    profile.get("voiceProfileId"),
+                )
+                return profile
+            elif resp.status_code == 404:
+                logger.info("No Convex profile found for user %s", user_id)
+                return None
+            else:
+                logger.warning(
+                    "Convex profile lookup failed: %d %s",
+                    resp.status_code,
+                    resp.text,
+                )
+                return None
+    except Exception as e:
+        logger.error("Convex profile lookup error: %s", e)
+        return None
 
 
 @app.websocket("/ws/translate")
@@ -90,6 +193,9 @@ async def websocket_translate(ws: WebSocket):
     minimax = MinimaxClient(api_key=minimax_key, group_id=minimax_group_id)
     speechmatics_tts = SpeechmaticsTTSClient(api_key=speechmatics_key)
     connection_open = True
+
+    # Voice profile for clone TTS (set via Convex lookup on config)
+    user_voice_id: str | None = None
 
     # Buffer for accumulating transcript before translation
     transcript_buffer = ""
@@ -200,19 +306,36 @@ async def websocket_translate(ws: WebSocket):
             logger.error("Error in on_translation: %s", e)
 
     async def synthesize_tts(translated_text: str) -> bytes | None:
-        if tts_provider == "speechmatics":
-            audio_data = await speechmatics_tts.text_to_speech(
-                text=translated_text,
-                language=target_lang,
-            )
-            if audio_data:
-                return audio_data
-            logger.warning(
-                "Speechmatics TTS returned no audio for target language '%s'; "
-                "falling back to MiniMax TTS.",
-                target_lang,
-            )
+        # If user has a voice clone profile (MiniMax file_id), try clone TTS first
+        if user_voice_id:
+            try:
+                audio_data = await minimax.voice_clone_tts(
+                    text=translated_text,
+                    file_id=user_voice_id,
+                )
+                if audio_data:
+                    logger.info("[TTS] Used MiniMax voice clone (file_id=%s)", user_voice_id)
+                    return audio_data
+            except Exception as e:
+                logger.warning(
+                    "MiniMax voice clone TTS failed, falling back to standard: %s", e
+                )
 
+        # Primary: Speechmatics TTS
+        audio_data = await speechmatics_tts.text_to_speech(
+            text=translated_text,
+            language=target_lang,
+        )
+        if audio_data:
+            return audio_data
+
+        logger.warning(
+            "Speechmatics TTS returned no audio for target language '%s'; "
+            "falling back to MiniMax TTS.",
+            target_lang,
+        )
+
+        # Fallback: MiniMax standard TTS
         return await minimax.text_to_speech(
             text=translated_text,
             language=target_lang,
@@ -343,6 +466,28 @@ async def websocket_translate(ws: WebSocket):
                         "Speechmatics" if use_speechmatics_translation else "MiniMax",
                     )
                     logger.info("TTS provider: %s", tts_provider)
+
+                    # Look up voice profile from Convex if user_id provided
+                    config_user_id = msg.get("user_id", "")
+                    if config_user_id:
+                        profile = await lookup_voice_profile(config_user_id)
+                        if (
+                            profile
+                            and profile.get("voiceProfileStatus") == "ready"
+                            and profile.get("voiceProfileId")
+                        ):
+                            user_voice_id = profile["voiceProfileId"]
+                            logger.info(
+                                "Using voice profile %s for user %s",
+                                user_voice_id,
+                                config_user_id,
+                            )
+                        else:
+                            user_voice_id = None
+                            logger.info(
+                                "No ready voice profile for user %s, using default",
+                                config_user_id,
+                            )
 
                     # Initialize Speechmatics with the source language
                     if speechmatics:
